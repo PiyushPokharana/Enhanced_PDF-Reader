@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to Ebook Reader</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>PDF Ebook Reader</h1>
+            <div class="controls">
+                <input type="file" id="pdfUpload" accept=".pdf" style="display: none;">
+                <button id="uploadBtn" class="btn">Upload PDF</button>
+                <button id="toggleView" class="btn" style="display: none;">Toggle View</button>
+            </div>
+        </header>
+
+        <div class="reader-container" id="readerContainer" style="display: none;">
+            <div class="book-controls">
+                <button id="prevPage" class="nav-btn">◀ Previous</button>
+                <span id="pageInfo">Page 1 of 1</span>
+                <button id="nextPage" class="nav-btn">Next ▶</button>
+            </div>
+
+            <div class="book-wrapper">
+                <div class="book" id="book">
+                    <div class="page left-page" id="leftPage">
+                        <canvas id="leftCanvas"></canvas>
+                    </div>
+                    <div class="page right-page" id="rightPage">
+                        <canvas id="rightCanvas"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="single-page-view" id="singlePageView" style="display: none;">
+                <canvas id="singleCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
