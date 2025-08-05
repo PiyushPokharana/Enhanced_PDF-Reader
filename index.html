@@ -4,48 +4,135 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF to Ebook Reader</title>
-    <link rel="stylesheet" href="styles.css">
-    <link rel="icon" href="data:,">
+    <title>PDF eBook Reader - Improved Layout & TOC</title>
+    <link rel="stylesheet" href="style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 
 <body>
-    <div class="container">
-        <header class="header">
-            <h1>PDF Ebook Reader</h1>
-            <div class="controls">
-                <input type="file" id="pdfUpload" accept=".pdf" style="display: none;">
-                <button id="uploadBtn" class="btn">Upload PDF</button>
-                <button id="toggleView" class="btn" style="display: none;">Toggle View</button>
+    <div class="app-container">
+        <!-- Header with controls -->
+        <header class="app-header">
+            <div class="header-content">
+                <h1>PDF eBook Reader</h1>
+                <div class="header-controls">
+                    <button id="toggleSidebar" class="btn btn--secondary btn--sm">
+                        <span>Toggle Sidebar</span>
+                    </button>
+                    <button id="toggleView" class="btn btn--secondary btn--sm">
+                        <span id="viewMode">Single Page</span>
+                    </button>
+                    <button id="fullscreen" class="btn btn--secondary btn--sm">
+                        <span>Fullscreen</span>
+                    </button>
+                </div>
             </div>
         </header>
 
-        <div class="reader-container" id="readerContainer" style="display: none;">
-            <div class="book-controls">
-                <button id="prevPage" class="nav-btn">◀ Previous</button>
-                <span id="pageInfo">Page 1 of 1</span>
-                <button id="nextPage" class="nav-btn">Next ▶</button>
-            </div>
-
-            <div class="book-wrapper">
-                <div class="book" id="book">
-                    <div class="page left-page" id="leftPage">
-                        <canvas id="leftCanvas"></canvas>
+        <main class="app-main">
+            <!-- Left Sidebar with Upload + TOC -->
+            <aside id="sidebar" class="sidebar">
+                <!-- Upload Section -->
+                <div class="sidebar-section upload-section">
+                    <div class="sidebar-section-header">
+                        <h3>📄 Upload PDF</h3>
                     </div>
-                    <div class="page right-page" id="rightPage">
-                        <canvas id="rightCanvas"></canvas>
+                    <div class="upload-content">
+                        <div class="upload-area-compact">
+                            <input type="file" id="fileInput" accept=".pdf" class="hidden">
+                            <button id="uploadBtn" class="btn btn--primary btn--full-width">
+                                Choose PDF File
+                            </button>
+                            <div class="upload-hint">
+                                <small>Supports PDFs with bookmarks for TOC generation</small>
+                            </div>
+                            <div id="fileInfo" class="file-info hidden">
+                                <div class="file-name"></div>
+                                <div class="file-status"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TOC Section -->
+                <div class="sidebar-section toc-section">
+                    <div class="sidebar-section-header">
+                        <h3>📚 Table of Contents</h3>
+                        <div id="tocStatus" class="toc-status">No PDF loaded</div>
+                    </div>
+                    <div id="tocContainer" class="toc-container">
+                        <div class="toc-placeholder">
+                            <p>Upload a PDF to view its table of contents</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content Area - PDF Viewer -->
+            <div class="content-area">
+                <!-- Reader area (always visible) -->
+                <div id="readerArea" class="reader-area">
+                    <!-- Navigation controls -->
+                    <div class="reader-controls">
+                        <div class="nav-controls">
+                            <button id="prevPage" class="btn btn--outline btn--sm" disabled>← Previous</button>
+                            <span id="pageInfo" class="page-info">No PDF loaded</span>
+                            <button id="nextPage" class="btn btn--outline btn--sm" disabled>Next →</button>
+                        </div>
+                        <div class="zoom-controls">
+                            <button id="zoomOut" class="btn btn--outline btn--sm" disabled>-</button>
+                            <span id="zoomLevel" class="zoom-info">100%</span>
+                            <button id="zoomIn" class="btn btn--outline btn--sm" disabled>+</button>
+                            <button id="fitWidth" class="btn btn--outline btn--sm" disabled>Fit Width</button>
+                        </div>
+                    </div>
+
+                    <!-- PDF canvas container -->
+                    <div id="pdfContainer" class="pdf-container">
+                        <div class="pdf-placeholder">
+                            <div class="placeholder-content">
+                                <div class="placeholder-icon">📖</div>
+                                <h2>Welcome to PDF eBook Reader</h2>
+                                <p>Upload a PDF file from the sidebar to start reading</p>
+                                <ul class="feature-list">
+                                    <li>✓ Interactive Table of Contents</li>
+                                    <li>✓ Single & Double Page View</li>
+                                    <li>✓ Zoom & Navigation Controls</li>
+                                    <li>✓ Responsive Design</li>
+                                </ul>
+                            </div>
+                        </div>
+                        <canvas id="pdfCanvas" class="pdf-canvas hidden"></canvas>
+                        <canvas id="pdfCanvas2" class="pdf-canvas hidden"></canvas>
+                    </div>
+
+                    <!-- Loading indicator -->
+                    <div id="loadingIndicator" class="loading-indicator hidden">
+                        <div class="loading-spinner"></div>
+                        <p id="loadingText">Loading PDF...</p>
                     </div>
                 </div>
             </div>
+        </main>
+    </div>
 
-            <div class="single-page-view" id="singlePageView" style="display: none;">
-                <canvas id="singleCanvas"></canvas>
+    <!-- Error modal -->
+    <div id="errorModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Error</h3>
+                <button id="closeError" class="btn btn--outline btn--sm">×</button>
+            </div>
+            <div class="modal-body">
+                <p id="errorMessage">An error occurred while processing the PDF.</p>
+            </div>
+            <div class="modal-footer">
+                <button id="errorOk" class="btn btn--primary">OK</button>
             </div>
         </div>
     </div>
 
-    <script src="script.js"></script>
+    <script src="app.js"></script>
 </body>
 
 </html>
