@@ -4,124 +4,195 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF eBook Reader - Improved Layout & TOC</title>
+    <title>Enhanced PDF E-book Reader</title>
     <link rel="stylesheet" href="style.css">
+    <!-- PDF.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- Quill Rich Text Editor CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
 </head>
 
 <body>
     <div class="app-container">
-        <!-- Header with controls -->
+        <!-- Header -->
         <header class="app-header">
             <div class="header-content">
-                <h1>PDF eBook Reader</h1>
+                <h1>📚 Enhanced PDF Reader</h1>
                 <div class="header-controls">
                     <button id="toggleSidebar" class="btn btn--secondary btn--sm">
-                        <span>Toggle Sidebar</span>
+                        <span id="sidebarToggleIcon">◀</span> Toggle Sidebar
                     </button>
-                    <button id="toggleView" class="btn btn--secondary btn--sm">
-                        <span id="viewMode">Single Page</span>
+                    <button id="toggleRightPanel" class="btn btn--secondary btn--sm">
+                        Toggle Right Panel <span id="rightPanelToggleIcon">▶</span>
                     </button>
-                    <button id="fullscreen" class="btn btn--secondary btn--sm">
-                        <span>Fullscreen</span>
-                    </button>
+                    <button id="fullscreen" class="btn btn--outline btn--sm">⛶ Fullscreen</button>
                 </div>
             </div>
         </header>
 
+        <!-- Main Content Area -->
         <main class="app-main">
-            <!-- Left Sidebar with Upload + TOC -->
-            <aside id="sidebar" class="sidebar">
+            <!-- Left Sidebar -->
+            <aside class="sidebar" id="leftSidebar">
                 <!-- Upload Section -->
-                <div class="sidebar-section upload-section">
+                <section class="sidebar-section upload-section">
                     <div class="sidebar-section-header">
-                        <h3>📄 Upload PDF</h3>
+                        <h3>📁 Upload PDF</h3>
                     </div>
                     <div class="upload-content">
                         <div class="upload-area-compact">
-                            <input type="file" id="fileInput" accept=".pdf" class="hidden">
-                            <button id="uploadBtn" class="btn btn--primary btn--full-width">
-                                Choose PDF File
-                            </button>
+                            <div class="upload-icon">📄</div>
+                            <button id="uploadBtn" class="btn btn--primary">Choose PDF File</button>
+                            <input type="file" id="fileInput" accept=".pdf" hidden>
                             <div class="upload-hint">
-                                <small>Supports PDFs with bookmarks for TOC generation</small>
-                            </div>
-                            <div id="fileInfo" class="file-info hidden">
-                                <div class="file-name"></div>
-                                <div class="file-status"></div>
+                                <small>Or drag and drop a PDF file here</small>
                             </div>
                         </div>
+                        <div id="fileInfo" class="file-info hidden">
+                            <div class="file-name" id="fileName"></div>
+                            <div class="file-status" id="fileStatus"></div>
+                        </div>
                     </div>
-                </div>
+                </section>
 
-                <!-- TOC Section -->
-                <div class="sidebar-section toc-section">
+                <!-- Table of Contents Section -->
+                <section class="sidebar-section toc-section">
                     <div class="sidebar-section-header">
-                        <h3>📚 Table of Contents</h3>
-                        <div id="tocStatus" class="toc-status">No PDF loaded</div>
+                        <h3>📖 Table of Contents</h3>
+                        <span class="toc-status" id="tocStatus">No PDF loaded</span>
                     </div>
-                    <div id="tocContainer" class="toc-container">
+                    <div class="toc-container" id="tocContainer">
                         <div class="toc-placeholder">
-                            <p>Upload a PDF to view its table of contents</p>
+                            <p>📄 Upload a PDF to see the table of contents</p>
                         </div>
                     </div>
-                </div>
+                </section>
             </aside>
 
-            <!-- Main Content Area - PDF Viewer -->
+            <!-- Center Content Area -->
             <div class="content-area">
-                <!-- Reader area (always visible) -->
-                <div id="readerArea" class="reader-area">
-                    <!-- Navigation controls -->
-                    <div class="reader-controls">
-                        <div class="nav-controls">
-                            <button id="prevPage" class="btn btn--outline btn--sm" disabled>← Previous</button>
-                            <span id="pageInfo" class="page-info">No PDF loaded</span>
-                            <button id="nextPage" class="btn btn--outline btn--sm" disabled>Next →</button>
-                        </div>
-                        <div class="zoom-controls">
-                            <button id="zoomOut" class="btn btn--outline btn--sm" disabled>-</button>
-                            <span id="zoomLevel" class="zoom-info">100%</span>
-                            <button id="zoomIn" class="btn btn--outline btn--sm" disabled>+</button>
-                            <button id="fitWidth" class="btn btn--outline btn--sm" disabled>Fit Width</button>
-                        </div>
+                <!-- PDF Reader Controls -->
+                <div class="reader-controls">
+                    <div class="nav-controls">
+                        <button id="prevPage" class="btn btn--secondary btn--sm">← Previous</button>
+                        <span class="page-info" id="pageInfo">No PDF loaded</span>
+                        <button id="nextPage" class="btn btn--secondary btn--sm">Next →</button>
                     </div>
 
-                    <!-- PDF canvas container -->
-                    <div id="pdfContainer" class="pdf-container">
-                        <div class="pdf-placeholder">
+                    <div class="zoom-controls">
+                        <button id="zoomOut" class="btn btn--secondary btn--sm">-</button>
+                        <span class="zoom-info-container">
+                            <input type="text" id="zoomInfo" class="zoom-input" value="100%" readonly>
+                        </span>
+                        <button id="zoomIn" class="btn btn--secondary btn--sm">+</button>
+                        <button id="fitWidth" class="btn btn--outline btn--sm">Fit Width</button>
+                        <button id="toggleView" class="btn btn--outline btn--sm">Double Page</button>
+                    </div>
+                </div>
+
+                <!-- PDF Container -->
+                <div class="reader-area">
+                    <div class="pdf-container" id="pdfContainer">
+                        <div class="pdf-placeholder" id="pdfPlaceholder">
                             <div class="placeholder-content">
                                 <div class="placeholder-icon">📖</div>
-                                <h2>Welcome to PDF eBook Reader</h2>
+                                <h2>Welcome to Enhanced PDF Reader</h2>
                                 <p>Upload a PDF file from the sidebar to start reading</p>
                                 <ul class="feature-list">
-                                    <li>✓ Interactive Table of Contents</li>
-                                    <li>✓ Single & Double Page View</li>
-                                    <li>✓ Zoom & Navigation Controls</li>
-                                    <li>✓ Responsive Design</li>
+                                    <li>✨ Interactive table of contents</li>
+                                    <li>🔍 Zoom and navigation controls</li>
+                                    <li>✏️ Text highlighting and notes</li>
+                                    <li>🤖 AI-powered document analysis</li>
+                                    <li>📱 Responsive design</li>
                                 </ul>
                             </div>
                         </div>
                         <canvas id="pdfCanvas" class="pdf-canvas hidden"></canvas>
                         <canvas id="pdfCanvas2" class="pdf-canvas hidden"></canvas>
-                    </div>
-
-                    <!-- Loading indicator -->
-                    <div id="loadingIndicator" class="loading-indicator hidden">
-                        <div class="loading-spinner"></div>
-                        <p id="loadingText">Loading PDF...</p>
+                        <div id="textLayer" class="text-layer"></div>
+                        <div id="highlightLayer" class="highlight-layer"></div>
                     </div>
                 </div>
             </div>
+
+            <!-- Right Panel -->
+            <aside class="right-panel" id="rightPanel">
+                <!-- AI Agent Section -->
+                <section class="panel-section ai-section">
+                    <div class="panel-section-header">
+                        <h3>🤖 AI Assistant</h3>
+                        <button id="clearChat" class="btn btn--secondary btn--sm">Clear</button>
+                    </div>
+                    <div class="ai-content">
+                        <div class="ai-chat-container" id="aiChatContainer">
+                            <div class="ai-message system-message">
+                                <p>👋 Hi! I'm your AI assistant. Upload a PDF and I'll help you analyze and understand
+                                    its content. Ask me questions about the document!</p>
+                            </div>
+                        </div>
+                        <div class="ai-input-area">
+                            <div class="api-key-setup" id="apiKeySetup">
+                                <input type="password" id="apiKeyInput" placeholder="Enter your OpenAI API key..."
+                                    class="form-control">
+                                <button id="saveApiKey" class="btn btn--primary btn--sm">Save Key</button>
+                            </div>
+                            <div class="chat-input-container hidden" id="chatInputContainer">
+                                <textarea id="aiInput" placeholder="Ask a question about the document..." rows="2"
+                                    class="form-control"></textarea>
+                                <button id="sendMessage" class="btn btn--primary btn--sm">Send</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Highlights Section -->
+                <section class="panel-section highlights-section">
+                    <div class="panel-section-header">
+                        <h3>✨ Highlights</h3>
+                        <button id="clearHighlights" class="btn btn--secondary btn--sm">Clear All</button>
+                    </div>
+                    <div class="highlights-content" id="highlightsContent">
+                        <div class="highlights-placeholder">
+                            <p>📝 Highlighted text will appear here</p>
+                            <small>Select text in the PDF to highlight it</small>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Notes Section -->
+                <section class="panel-section notes-section">
+                    <div class="panel-section-header">
+                        <h3>📝 Notes</h3>
+                        <button id="saveNotes" class="btn btn--primary btn--sm">Save</button>
+                    </div>
+                    <div class="notes-content">
+                        <div id="notesEditor" class="notes-editor"></div>
+                    </div>
+                </section>
+
+                <!-- Quick Access Icons -->
+                <div class="quick-access-icons">
+                    <button id="quickAI" class="quick-icon" title="AI Assistant">🤖</button>
+                    <button id="quickHighlights" class="quick-icon" title="Highlights">✨</button>
+                    <button id="quickNotes" class="quick-icon" title="Notes">📝</button>
+                </div>
+            </aside>
         </main>
     </div>
 
-    <!-- Error modal -->
-    <div id="errorModal" class="modal hidden">
+    <!-- Loading Indicator -->
+    <div class="loading-indicator hidden" id="loadingIndicator">
+        <div class="loading-spinner"></div>
+        <p id="loadingText">Loading PDF...</p>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal hidden" id="errorModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Error</h3>
-                <button id="closeError" class="btn btn--outline btn--sm">×</button>
+                <h3>❌ Error</h3>
+                <button id="closeError" class="btn btn--secondary btn--sm">×</button>
             </div>
             <div class="modal-body">
                 <p id="errorMessage">An error occurred while processing the PDF.</p>
@@ -130,6 +201,15 @@
                 <button id="errorOk" class="btn btn--primary">OK</button>
             </div>
         </div>
+    </div>
+
+    <!-- Highlight Context Menu -->
+    <div class="context-menu hidden" id="highlightMenu">
+        <button id="highlightYellow" class="context-menu-item">🟡 Yellow</button>
+        <button id="highlightGreen" class="context-menu-item">🟢 Green</button>
+        <button id="highlightBlue" class="context-menu-item">🔵 Blue</button>
+        <button id="highlightRed" class="context-menu-item">🔴 Red</button>
+        <button id="removeHighlight" class="context-menu-item">❌ Remove</button>
     </div>
 
     <script src="app.js"></script>

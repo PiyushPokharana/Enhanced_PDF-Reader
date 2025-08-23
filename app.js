@@ -2,166 +2,258 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 /**
- * Improved PDFEbookReader - Fixed TOC navigation and improved layout
- * Key improvements:
- * 1. Proper async destination resolution to fix TOC navigation
- * 2. Sidebar layout with upload area + TOC
- * 3. Main viewer takes majority of screen space
- * 4. Better error handling and user feedback
- * 5. FIXED: Upload functionality and sidebar toggle (final fix)
+ * Enhanced PDF E-book Reader with AI Integration and Advanced Features
+ * Features:
+ * 1. Right-side panel with AI agent, highlights, and notes
+ * 2. AI agent integration for document analysis
+ * 3. Text highlighting and storage
+ * 4. Rich text notes editor with Quill
+ * 5. Fixed zoom functionality with manual input
+ * 6. Quick access icons
  */
-class PDFEbookReader {
+class EnhancedPDFReader {
     constructor() {
+        // PDF.js properties
         this.pdfDoc = null;
         this.currentPage = 1;
         this.totalPages = 0;
         this.scale = 1.0;
         this.isDoublePageMode = false;
         this.isSidebarVisible = true;
+        this.isRightPanelVisible = true;
         this.isFullscreen = false;
-        
-        // TOC-specific properties
+        this.isFitWidthMode = false;
+
+        // TOC properties
         this.outline = null;
         this.tocItems = [];
         this.activeTocItem = null;
-        
+
         // Canvas elements
         this.canvas1 = document.getElementById('pdfCanvas');
         this.canvas2 = document.getElementById('pdfCanvas2');
-        this.ctx1 = this.canvas1.getContext('2d');
-        this.ctx2 = this.canvas2.getContext('2d');
-        
+        this.ctx1 = this.canvas1?.getContext('2d');
+        this.ctx2 = this.canvas2?.getContext('2d');
+
+        // New features
+        this.highlights = [];
+        this.aiApiKey = null;
+        this.notesEditor = null;
+        this.selectedText = '';
+        this.isSelecting = false;
+
         // Initialize after DOM is ready
         setTimeout(() => {
             this.initializeEventListeners();
+            this.initializeRightPanel();
             this.updateUIState();
         }, 100);
     }
 
     initializeEventListeners() {
-        console.log('🔧 Initializing event listeners...');
-        
-        // CRITICAL FIX: File upload event listeners with proper element selection
+        console.log('🔧 Initializing enhanced event listeners...');
+
+        // File upload
         const uploadBtn = document.getElementById('uploadBtn');
         const fileInput = document.getElementById('fileInput');
-        
+
         if (uploadBtn && fileInput) {
-            console.log('✓ Upload elements found');
-            
-            // Remove any existing listeners
-            uploadBtn.replaceWith(uploadBtn.cloneNode(true));
-            const newUploadBtn = document.getElementById('uploadBtn');
-            
-            newUploadBtn.addEventListener('click', (e) => {
+            uploadBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                e.stopPropagation();
-                console.log('🔴 Upload button clicked - triggering file input');
                 fileInput.click();
             });
-            
+
             fileInput.addEventListener('change', (e) => {
-                console.log('📁 File input changed:', e.target.files);
                 if (e.target.files && e.target.files[0]) {
-                    console.log('✓ File selected:', e.target.files[0].name);
                     this.handleFileUpload(e.target.files[0]);
                 }
             });
-            
-            console.log('✓ Upload event listeners attached');
-        } else {
-            console.error('❌ Upload elements not found:', { uploadBtn, fileInput });
         }
 
         // Navigation controls
         const prevBtn = document.getElementById('prevPage');
         const nextBtn = document.getElementById('nextPage');
-        
-        if (prevBtn) {
-            prevBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.previousPage();
-            });
-        }
-        if (nextBtn) {
-            nextBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.nextPage();
-            });
-        }
-        
+        if (prevBtn) prevBtn.addEventListener('click', () => this.previousPage());
+        if (nextBtn) nextBtn.addEventListener('click', () => this.nextPage());
+
         // Zoom controls
         const zoomInBtn = document.getElementById('zoomIn');
         const zoomOutBtn = document.getElementById('zoomOut');
         const fitWidthBtn = document.getElementById('fitWidth');
-        
-        if (zoomInBtn) zoomInBtn.addEventListener('click', (e) => { e.preventDefault(); this.zoomIn(); });
-        if (zoomOutBtn) zoomOutBtn.addEventListener('click', (e) => { e.preventDefault(); this.zoomOut(); });
-        if (fitWidthBtn) fitWidthBtn.addEventListener('click', (e) => { e.preventDefault(); this.fitWidth(); });
-        
+        const zoomInput = document.getElementById('zoomInfo');
+
+        if (zoomInBtn) zoomInBtn.addEventListener('click', () => this.zoomIn());
+        if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => this.zoomOut());
+        if (fitWidthBtn) fitWidthBtn.addEventListener('click', () => this.toggleFitWidth());
+
+        // Enhanced zoom input functionality
+        if (zoomInput) {
+            zoomInput.addEventListener('focus', () => {
+                zoomInput.readOnly = false;
+                zoomInput.select();
+            });
+
+            zoomInput.addEventListener('blur', () => {
+                zoomInput.readOnly = true;
+            });
+
+            zoomInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    this.setZoomFromInput();
+                    zoomInput.blur();
+                }
+            });
+        }
+
         // View toggle
         const toggleViewBtn = document.getElementById('toggleView');
         if (toggleViewBtn) {
-            toggleViewBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.toggleViewMode();
-            });
+            toggleViewBtn.addEventListener('click', () => this.toggleViewMode());
         }
-        
-        // CRITICAL FIX: Sidebar controls with proper element replacement
+
+        // Sidebar controls
         const toggleSidebarBtn = document.getElementById('toggleSidebar');
         if (toggleSidebarBtn) {
-            // Remove any existing listeners
-            toggleSidebarBtn.replaceWith(toggleSidebarBtn.cloneNode(true));
-            const newToggleSidebarBtn = document.getElementById('toggleSidebar');
-            
-            newToggleSidebarBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('🔴 Sidebar toggle clicked');
-                this.toggleSidebar();
-            });
-            
-            console.log('✓ Sidebar toggle event listener attached');
-        } else {
-            console.error('❌ Sidebar toggle button not found');
+            toggleSidebarBtn.addEventListener('click', () => this.toggleSidebar());
         }
-        
+
+        // Right panel controls
+        const toggleRightPanelBtn = document.getElementById('toggleRightPanel');
+        if (toggleRightPanelBtn) {
+            toggleRightPanelBtn.addEventListener('click', () => this.toggleRightPanel());
+        }
+
         // Fullscreen
         const fullscreenBtn = document.getElementById('fullscreen');
         if (fullscreenBtn) {
-            fullscreenBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.toggleFullscreen();
+            fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
+        }
+
+        // Quick access icons
+        const quickAI = document.getElementById('quickAI');
+        const quickHighlights = document.getElementById('quickHighlights');
+        const quickNotes = document.getElementById('quickNotes');
+
+        if (quickAI) quickAI.addEventListener('click', () => this.focusAISection());
+        if (quickHighlights) quickHighlights.addEventListener('click', () => this.focusHighlightsSection());
+        if (quickNotes) quickNotes.addEventListener('click', () => this.focusNotesSection());
+
+        // AI Agent controls
+        const saveApiKey = document.getElementById('saveApiKey');
+        const sendMessage = document.getElementById('sendMessage');
+        const clearChat = document.getElementById('clearChat');
+        const aiInput = document.getElementById('aiInput');
+
+        if (saveApiKey) saveApiKey.addEventListener('click', () => this.saveApiKey());
+        if (sendMessage) sendMessage.addEventListener('click', () => this.sendAIMessage());
+        if (clearChat) clearChat.addEventListener('click', () => this.clearAIChat());
+
+        if (aiInput) {
+            aiInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendAIMessage();
+                }
             });
         }
-        
+
+        // Highlights controls
+        const clearHighlights = document.getElementById('clearHighlights');
+        if (clearHighlights) {
+            clearHighlights.addEventListener('click', () => this.clearAllHighlights());
+        }
+
+        // Notes controls
+        const saveNotes = document.getElementById('saveNotes');
+        if (saveNotes) {
+            saveNotes.addEventListener('click', () => this.saveNotes());
+        }
+
         // Error modal
-        const closeErrorBtn = document.getElementById('closeError');
-        const errorOkBtn = document.getElementById('errorOk');
-        
-        if (closeErrorBtn) closeErrorBtn.addEventListener('click', () => this.hideError());
-        if (errorOkBtn) errorOkBtn.addEventListener('click', () => this.hideError());
+        const closeError = document.getElementById('closeError');
+        const errorOk = document.getElementById('errorOk');
+        if (closeError) closeError.addEventListener('click', () => this.hideError());
+        if (errorOk) errorOk.addEventListener('click', () => this.hideError());
 
         // Keyboard navigation
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
-        
-        // Drag and drop support
+
+        // Drag and drop
         this.initializeDragAndDrop();
-        
-        console.log('✅ All event listeners initialized');
+
+        // Text selection and highlighting
+        this.initializeTextSelection();
+
+        console.log('✅ Enhanced event listeners initialized');
     }
 
-    /**
-     * Initialize drag and drop functionality
-     */
+    initializeRightPanel() {
+        // Initialize Quill editor for notes
+        const notesEditor = document.getElementById('notesEditor');
+        if (notesEditor) {
+            this.notesEditor = new Quill(notesEditor, {
+                theme: 'snow',
+                placeholder: 'Write your notes here...',
+                modules: {
+                    toolbar: [
+                        [{ 'header': [1, 2, 3, false] }],
+                        ['bold', 'italic', 'underline'],
+                        [{ 'color': [] }, { 'background': [] }],
+                        [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                        ['clean']
+                    ]
+                }
+            });
+        }
+
+        // Load saved notes
+        this.loadNotes();
+    }
+
+    initializeTextSelection() {
+        const textLayer = document.getElementById('textLayer');
+        if (textLayer) {
+            textLayer.addEventListener('mouseup', (e) => this.handleTextSelection(e));
+            textLayer.addEventListener('contextmenu', (e) => this.handleContextMenu(e));
+        }
+
+        // Context menu for highlights
+        this.initializeHighlightContextMenu();
+
+        // Hide context menu on click outside
+        document.addEventListener('click', () => this.hideContextMenu());
+    }
+
+    initializeHighlightContextMenu() {
+        const contextMenu = document.getElementById('highlightMenu');
+        if (!contextMenu) return;
+
+        const colors = ['yellow', 'green', 'blue', 'red'];
+        colors.forEach(color => {
+            const btn = document.getElementById(`highlight${color.charAt(0).toUpperCase() + color.slice(1)}`);
+            if (btn) {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.highlightSelectedText(color);
+                    this.hideContextMenu();
+                });
+            }
+        });
+
+        const removeBtn = document.getElementById('removeHighlight');
+        if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeHighlight();
+                this.hideContextMenu();
+            });
+        }
+    }
+
     initializeDragAndDrop() {
         const uploadArea = document.querySelector('.upload-area-compact');
-        
-        if (!uploadArea) {
-            console.warn('⚠️ Upload area not found for drag and drop');
-            return;
-        }
-        
+        if (!uploadArea) return;
+
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             uploadArea.addEventListener(eventName, (e) => {
                 e.preventDefault();
@@ -184,98 +276,548 @@ class PDFEbookReader {
         uploadArea.addEventListener('drop', (e) => {
             const files = e.dataTransfer.files;
             if (files.length > 0 && files[0].type === 'application/pdf') {
-                console.log('📁 File dropped:', files[0].name);
                 this.handleFileUpload(files[0]);
             } else {
                 this.showError('Please drop a valid PDF file.');
             }
         });
-        
-        console.log('✓ Drag and drop initialized');
     }
 
-    /**
-     * Fixed file upload handler with proper loading states
-     */
     async handleFileUpload(file) {
-        console.log('📄 Handling file upload:', file.name, file.type, file.size);
-        
-        if (!file) {
-            this.showError('No file selected.');
-            return;
-        }
-        
-        if (file.type !== 'application/pdf') {
+        console.log('📄 Handling enhanced file upload:', file.name);
+
+        if (!file || file.type !== 'application/pdf') {
             this.showError('Please select a valid PDF file.');
             return;
         }
-        
+
         try {
             this.showLoading('Loading PDF...');
             this.updateFileInfo(file.name, 'Loading...');
-            
+
             const arrayBuffer = await file.arrayBuffer();
-            console.log('✓ File read as array buffer, size:', arrayBuffer.byteLength);
-            
-            // Load PDF document
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             this.pdfDoc = await loadingTask.promise;
             this.totalPages = this.pdfDoc.numPages;
             this.currentPage = 1;
-            
+
             console.log('✅ PDF loaded successfully:', this.totalPages, 'pages');
-            
             this.updateFileInfo(file.name, `${this.totalPages} pages loaded`);
-            
-            // Extract TOC with proper async handling
+
+            // Extract TOC
             this.showLoading('Extracting table of contents...');
             await this.extractTOC();
-            
+
             // Show PDF content
             this.hidePlaceholder();
-            
+
             // Render first page(s)
             this.showLoading('Rendering pages...');
             await this.renderCurrentPage();
-            
+
             this.hideLoading();
             this.updateUIState();
-            
-            console.log('🎉 PDF successfully loaded and rendered');
-            
+
+            // Update AI assistant with document info
+            this.updateAIWithDocument(file.name);
+
+            console.log('🎉 Enhanced PDF successfully loaded and rendered');
         } catch (error) {
             console.error('❌ Error loading PDF:', error);
-            this.showError(`Failed to load PDF file: ${error.message || 'Please ensure it\'s a valid PDF.'}`);
+            this.showError(`Failed to load PDF file: ${error.message}`);
             this.hideLoading();
             this.updateFileInfo('', 'Failed to load');
         }
     }
 
-    /**
-     * FIXED: Proper TOC extraction with async destination resolution
-     */
+    // Enhanced zoom functionality with manual input
+    setZoomFromInput() {
+        const zoomInput = document.getElementById('zoomInfo');
+        if (!zoomInput) return;
+
+        let value = zoomInput.value.replace('%', '');
+        const zoomValue = parseFloat(value);
+
+        if (isNaN(zoomValue) || zoomValue < 10 || zoomValue > 500) {
+            this.showError('Please enter a zoom value between 10% and 500%');
+            this.updateZoomDisplay();
+            return;
+        }
+
+        this.scale = zoomValue / 100;
+        this.isFitWidthMode = false;
+        this.renderCurrentPage();
+        this.updateZoomDisplay();
+    }
+
+    // Fixed fit width functionality
+    toggleFitWidth() {
+        const container = document.querySelector('.pdf-container');
+        if (!container || !this.pdfDoc) return;
+
+        if (this.isFitWidthMode) {
+            // Switch to fit height mode
+            this.isFitWidthMode = false;
+            this.fitToHeight();
+            document.getElementById('fitWidth').textContent = 'Fit Height';
+        } else {
+            // Switch to fit width mode
+            this.isFitWidthMode = true;
+            this.fitToWidth();
+            document.getElementById('fitWidth').textContent = 'Fit Width';
+        }
+    }
+
+    async fitToWidth() {
+        if (!this.pdfDoc) return;
+
+        const container = document.querySelector('.pdf-container');
+        const containerWidth = container.clientWidth - 32; // Account for padding
+
+        const page = await this.pdfDoc.getPage(this.currentPage);
+        const viewport = page.getViewport({ scale: 1.0 });
+
+        this.scale = containerWidth / viewport.width;
+        this.renderCurrentPage();
+        this.updateZoomDisplay();
+    }
+
+    async fitToHeight() {
+        if (!this.pdfDoc) return;
+
+        const container = document.querySelector('.pdf-container');
+        const containerHeight = container.clientHeight - 32; // Account for padding
+
+        const page = await this.pdfDoc.getPage(this.currentPage);
+        const viewport = page.getViewport({ scale: 1.0 });
+
+        this.scale = containerHeight / viewport.height;
+        this.renderCurrentPage();
+        this.updateZoomDisplay();
+    }
+
+    zoomIn() {
+        this.scale = Math.min(this.scale * 1.2, 5.0);
+        this.isFitWidthMode = false;
+        this.renderCurrentPage();
+        this.updateZoomDisplay();
+        this.updateFitWidthButton();
+    }
+
+    zoomOut() {
+        this.scale = Math.max(this.scale / 1.2, 0.1);
+        this.isFitWidthMode = false;
+        this.renderCurrentPage();
+        this.updateZoomDisplay();
+        this.updateFitWidthButton();
+    }
+
+    updateFitWidthButton() {
+        const fitWidthBtn = document.getElementById('fitWidth');
+        if (fitWidthBtn && !this.isFitWidthMode) {
+            fitWidthBtn.textContent = 'Fit Width';
+        }
+    }
+
+    updateZoomDisplay() {
+        const zoomInput = document.getElementById('zoomInfo');
+        if (zoomInput) {
+            zoomInput.value = `${Math.round(this.scale * 100)}%`;
+        }
+    }
+
+    // Text selection and highlighting
+    handleTextSelection(e) {
+        const selection = window.getSelection();
+        if (selection.rangeCount > 0 && !selection.isCollapsed) {
+            this.selectedText = selection.toString().trim();
+            if (this.selectedText.length > 0) {
+                console.log('Text selected:', this.selectedText);
+            }
+        }
+    }
+
+    handleContextMenu(e) {
+        const selection = window.getSelection();
+        if (selection.rangeCount > 0 && !selection.isCollapsed) {
+            e.preventDefault();
+            this.selectedText = selection.toString().trim();
+            if (this.selectedText.length > 0) {
+                this.showContextMenu(e.clientX, e.clientY);
+            }
+        }
+    }
+
+    showContextMenu(x, y) {
+        const contextMenu = document.getElementById('highlightMenu');
+        if (contextMenu) {
+            contextMenu.style.left = `${x}px`;
+            contextMenu.style.top = `${y}px`;
+            contextMenu.classList.remove('hidden');
+        }
+    }
+
+    hideContextMenu() {
+        const contextMenu = document.getElementById('highlightMenu');
+        if (contextMenu) {
+            contextMenu.classList.add('hidden');
+        }
+    }
+
+    highlightSelectedText(color) {
+        if (!this.selectedText) return;
+
+        const highlight = {
+            id: Date.now(),
+            text: this.selectedText,
+            color: color,
+            page: this.currentPage,
+            timestamp: new Date().toISOString()
+        };
+
+        this.highlights.push(highlight);
+        this.updateHighlightsList();
+        this.saveHighlights();
+
+        // Clear selection
+        window.getSelection().removeAllRanges();
+        this.selectedText = '';
+
+        console.log('Text highlighted:', highlight);
+    }
+
+    removeHighlight() {
+        // Implementation for removing specific highlight would go here
+        // For now, just clear selection
+        window.getSelection().removeAllRanges();
+        this.selectedText = '';
+    }
+
+    updateHighlightsList() {
+        const highlightsContent = document.getElementById('highlightsContent');
+        if (!highlightsContent) return;
+
+        if (this.highlights.length === 0) {
+            highlightsContent.innerHTML = `
+                <div class="highlights-placeholder">
+                    <p>📝 Highlighted text will appear here</p>
+                    <small>Select text in the PDF to highlight it</small>
+                </div>
+            `;
+            return;
+        }
+
+        const highlightsHTML = this.highlights.map(highlight => `
+            <div class="highlight-item" data-highlight-id="${highlight.id}" onclick="reader.goToHighlight('${highlight.id}')">
+                <div class="highlight-text">"${highlight.text.substring(0, 100)}${highlight.text.length > 100 ? '...' : ''}"</div>
+                <div class="highlight-meta">
+                    <span>Page ${highlight.page}</span>
+                    <div class="highlight-color ${highlight.color}" style="background-color: var(--highlight-${highlight.color})"></div>
+                </div>
+            </div>
+        `).join('');
+
+        highlightsContent.innerHTML = highlightsHTML;
+    }
+
+    goToHighlight(highlightId) {
+        const highlight = this.highlights.find(h => h.id == highlightId);
+        if (highlight) {
+            this.goToPage(highlight.page);
+        }
+    }
+
+    clearAllHighlights() {
+        if (this.highlights.length === 0) return;
+
+        if (confirm('Are you sure you want to clear all highlights?')) {
+            this.highlights = [];
+            this.updateHighlightsList();
+            this.saveHighlights();
+        }
+    }
+
+    saveHighlights() {
+        try {
+            localStorage.setItem('pdf-reader-highlights', JSON.stringify(this.highlights));
+        } catch (error) {
+            console.warn('Could not save highlights:', error);
+        }
+    }
+
+    loadHighlights() {
+        try {
+            const saved = localStorage.getItem('pdf-reader-highlights');
+            if (saved) {
+                this.highlights = JSON.parse(saved);
+                this.updateHighlightsList();
+            }
+        } catch (error) {
+            console.warn('Could not load highlights:', error);
+        }
+    }
+
+    // AI Agent functionality
+    saveApiKey() {
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        if (!apiKeyInput) return;
+
+        const apiKey = apiKeyInput.value.trim();
+        if (!apiKey) {
+            this.showError('Please enter a valid OpenAI API key');
+            return;
+        }
+
+        this.aiApiKey = apiKey;
+
+        // Hide API key setup and show chat interface
+        const apiKeySetup = document.getElementById('apiKeySetup');
+        const chatInputContainer = document.getElementById('chatInputContainer');
+
+        if (apiKeySetup) apiKeySetup.classList.add('hidden');
+        if (chatInputContainer) chatInputContainer.classList.remove('hidden');
+
+        // Save to localStorage (encrypted in real implementation)
+        try {
+            localStorage.setItem('pdf-reader-api-key', apiKey);
+        } catch (error) {
+            console.warn('Could not save API key:', error);
+        }
+
+        this.addAIMessage('system', '✅ API key saved! You can now ask questions about your documents.');
+    }
+
+    async sendAIMessage() {
+        const aiInput = document.getElementById('aiInput');
+        if (!aiInput || !this.aiApiKey) return;
+
+        const message = aiInput.value.trim();
+        if (!message) return;
+
+        // Add user message to chat
+        this.addAIMessage('user', message);
+        aiInput.value = '';
+
+        // Add loading message
+        const loadingId = this.addAIMessage('ai', '🤔 Thinking...');
+
+        try {
+            // Get document context
+            const documentContext = await this.getDocumentContext();
+
+            const response = await this.callOpenAI(message, documentContext);
+
+            // Replace loading message with response
+            this.updateAIMessage(loadingId, response);
+        } catch (error) {
+            console.error('AI API error:', error);
+            this.updateAIMessage(loadingId, '❌ Sorry, I encountered an error. Please check your API key and try again.');
+        }
+    }
+
+    async callOpenAI(message, context) {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.aiApiKey}`
+            },
+            body: JSON.stringify({
+                model: 'gpt-3.5-turbo',
+                messages: [
+                    {
+                        role: 'system',
+                        content: `You are a helpful AI assistant analyzing a PDF document. Here's the context from the document: ${context}. Please answer questions about this document accurately and concisely.`
+                    },
+                    {
+                        role: 'user',
+                        content: message
+                    }
+                ],
+                max_tokens: 500,
+                temperature: 0.7
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0].message.content;
+    }
+
+    async getDocumentContext() {
+        if (!this.pdfDoc) return 'No document loaded.';
+
+        try {
+            // Extract text from current page and nearby pages for context
+            let context = '';
+            const startPage = Math.max(1, this.currentPage - 1);
+            const endPage = Math.min(this.totalPages, this.currentPage + 1);
+
+            for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+                const page = await this.pdfDoc.getPage(pageNum);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(' ');
+                context += `Page ${pageNum}: ${pageText.substring(0, 500)}...\n`;
+            }
+
+            return context || 'Could not extract text from document.';
+        } catch (error) {
+            console.error('Error extracting document context:', error);
+            return 'Error extracting document context.';
+        }
+    }
+
+    addAIMessage(type, content) {
+        const chatContainer = document.getElementById('aiChatContainer');
+        if (!chatContainer) return;
+
+        const messageId = Date.now();
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `ai-message ${type}-message`;
+        messageDiv.id = `message-${messageId}`;
+        messageDiv.innerHTML = `<p>${content}</p>`;
+
+        chatContainer.appendChild(messageDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        return messageId;
+    }
+
+    updateAIMessage(messageId, content) {
+        const messageElement = document.getElementById(`message-${messageId}`);
+        if (messageElement) {
+            messageElement.innerHTML = `<p>${content}</p>`;
+        }
+    }
+
+    clearAIChat() {
+        const chatContainer = document.getElementById('aiChatContainer');
+        if (chatContainer) {
+            chatContainer.innerHTML = `
+                <div class="ai-message system-message">
+                    <p>👋 Hi! I'm your AI assistant. Upload a PDF and I'll help you analyze and understand its content. Ask me questions about the document!</p>
+                </div>
+            `;
+        }
+    }
+
+    updateAIWithDocument(fileName) {
+        this.addAIMessage('system', `📄 Document "${fileName}" loaded successfully! You can now ask me questions about its content.`);
+    }
+
+    // Notes functionality
+    saveNotes() {
+        if (!this.notesEditor) return;
+
+        const content = this.notesEditor.getContents();
+        try {
+            localStorage.setItem('pdf-reader-notes', JSON.stringify(content));
+            this.showSuccess('Notes saved successfully!');
+        } catch (error) {
+            console.error('Error saving notes:', error);
+            this.showError('Could not save notes');
+        }
+    }
+
+    loadNotes() {
+        if (!this.notesEditor) return;
+
+        try {
+            const saved = localStorage.getItem('pdf-reader-notes');
+            if (saved) {
+                const content = JSON.parse(saved);
+                this.notesEditor.setContents(content);
+            }
+        } catch (error) {
+            console.warn('Could not load notes:', error);
+        }
+    }
+
+    // Panel management
+    toggleSidebar() {
+        const sidebar = document.getElementById('leftSidebar');
+        const toggleIcon = document.getElementById('sidebarToggleIcon');
+
+        if (sidebar) {
+            this.isSidebarVisible = !this.isSidebarVisible;
+            if (this.isSidebarVisible) {
+                sidebar.classList.remove('hidden');
+                if (toggleIcon) toggleIcon.textContent = '◀';
+            } else {
+                sidebar.classList.add('hidden');
+                if (toggleIcon) toggleIcon.textContent = '▶';
+            }
+        }
+    }
+
+    toggleRightPanel() {
+        const rightPanel = document.getElementById('rightPanel');
+        const toggleIcon = document.getElementById('rightPanelToggleIcon');
+
+        if (rightPanel) {
+            this.isRightPanelVisible = !this.isRightPanelVisible;
+            if (this.isRightPanelVisible) {
+                rightPanel.classList.remove('hidden');
+                if (toggleIcon) toggleIcon.textContent = '▶';
+            } else {
+                rightPanel.classList.add('hidden');
+                if (toggleIcon) toggleIcon.textContent = '◀';
+            }
+        }
+    }
+
+    // Quick access functions
+    focusAISection() {
+        const aiSection = document.querySelector('.ai-section');
+        if (aiSection) {
+            aiSection.scrollIntoView({ behavior: 'smooth' });
+
+            // Focus on AI input if available
+            const aiInput = document.getElementById('aiInput');
+            if (aiInput && !aiInput.closest('.hidden')) {
+                setTimeout(() => aiInput.focus(), 300);
+            }
+        }
+    }
+
+    focusHighlightsSection() {
+        const highlightsSection = document.querySelector('.highlights-section');
+        if (highlightsSection) {
+            highlightsSection.scrollIntoView({ behavior: 'smooth' });
+        }
+    }
+
+    focusNotesSection() {
+        const notesSection = document.querySelector('.notes-section');
+        if (notesSection) {
+            notesSection.scrollIntoView({ behavior: 'smooth' });
+
+            // Focus on notes editor
+            if (this.notesEditor) {
+                setTimeout(() => this.notesEditor.focus(), 300);
+            }
+        }
+    }
+
+    // Existing methods (preserved and enhanced)
     async extractTOC() {
         try {
             console.log('📖 Extracting table of contents...');
-            
-            // Get PDF outline/bookmarks
             this.outline = await this.pdfDoc.getOutline();
-            
+
             if (this.outline && this.outline.length > 0) {
                 console.log('✓ TOC found with', this.outline.length, 'top-level items');
-                
-                // Process the outline with proper async destination resolution
                 this.tocItems = await this.processOutlineWithDestinations(this.outline);
-                
                 this.renderTOC();
                 this.updateTocStatus(`${this.tocItems.length} items found`);
-                
             } else {
                 console.log('ℹ️ No table of contents found in PDF');
                 this.renderEmptyTOC();
                 this.updateTocStatus('No TOC available');
             }
-            
         } catch (error) {
             console.error('Error extracting TOC:', error);
             this.renderEmptyTOC();
@@ -283,21 +825,14 @@ class PDFEbookReader {
         }
     }
 
-    /**
-     * FIXED: Proper async processing of outline destinations
-     * This fixes the issue where all TOC items pointed to the last page
-     */
     async processOutlineWithDestinations(outline, level = 1, parentIndex = '') {
         const items = [];
-        
         for (let index = 0; index < outline.length; index++) {
             const item = outline[index];
             const currentIndex = parentIndex ? `${parentIndex}.${index + 1}` : `${index + 1}`;
-            
+
             try {
-                // CRITICAL FIX: Properly resolve destination for each item
                 const pageNum = await this.resolveDestinationToPageNumber(item.dest);
-                
                 const tocItem = {
                     title: item.title,
                     dest: item.dest,
@@ -308,20 +843,16 @@ class PDFEbookReader {
                     italic: item.italic || false,
                     hasChildren: item.items && item.items.length > 0
                 };
-                
+
                 items.push(tocItem);
-                console.log(`  📄 TOC item: "${item.title}" → Page ${pageNum}`);
-                
-                // Recursively process children
+                console.log(`📄 TOC item: "${item.title}" → Page ${pageNum}`);
+
                 if (item.items && item.items.length > 0) {
                     const childItems = await this.processOutlineWithDestinations(item.items, level + 1, currentIndex);
                     items.push(...childItems);
                 }
-                
             } catch (error) {
                 console.warn('Failed to resolve destination for TOC item:', item.title, error);
-                
-                // Add item with fallback page number
                 const tocItem = {
                     title: item.title,
                     dest: item.dest,
@@ -332,187 +863,95 @@ class PDFEbookReader {
                     italic: item.italic || false,
                     hasChildren: item.items && item.items.length > 0
                 };
-                
                 items.push(tocItem);
             }
         }
-        
         return items;
     }
 
-    /**
-     * FIXED: Proper destination resolution using PDF.js APIs
-     * This is the key fix for the TOC navigation issue
-     */
     async resolveDestinationToPageNumber(dest) {
-        if (!dest || !this.pdfDoc) {
-            return 1;
-        }
+        if (!dest || !this.pdfDoc) return 1;
 
         try {
             let resolvedDest;
-            
-            // Handle different destination types
             if (typeof dest === 'string') {
-                // Named destination - need to resolve it
                 resolvedDest = await this.pdfDoc.getDestination(dest);
             } else if (Array.isArray(dest)) {
-                // Direct destination array
                 resolvedDest = dest;
             } else {
-                console.warn('Unknown destination type:', typeof dest, dest);
                 return 1;
             }
 
             if (!resolvedDest || !Array.isArray(resolvedDest) || resolvedDest.length === 0) {
-                console.warn('Invalid resolved destination:', resolvedDest);
                 return 1;
             }
 
-            // Get page reference from destination
             const pageRef = resolvedDest[0];
-            
             if (!pageRef || typeof pageRef !== 'object') {
-                console.warn('No valid page reference in destination:', resolvedDest);
                 return 1;
             }
 
-            // Resolve page reference to page index
             const pageIndex = await this.pdfDoc.getPageIndex(pageRef);
-            
-            // Convert 0-based index to 1-based page number
             const pageNumber = pageIndex + 1;
-            
-            // Validate page number
+
             if (pageNumber < 1 || pageNumber > this.totalPages) {
-                console.warn('Invalid page number resolved:', pageNumber, 'total pages:', this.totalPages);
                 return Math.max(1, Math.min(pageNumber, this.totalPages));
             }
-            
+
             return pageNumber;
-            
         } catch (error) {
             console.error('Error resolving destination:', error);
             return 1;
         }
     }
 
-    /**
-     * Fixed TOC rendering with proper page numbers
-     */
     renderTOC() {
         const tocContainer = document.getElementById('tocContainer');
-        
         if (!this.tocItems || this.tocItems.length === 0) {
             this.renderEmptyTOC();
             return;
         }
 
-        // Create TOC HTML structure
         const tocHTML = this.createTOCHTML();
         tocContainer.innerHTML = tocHTML;
-        
-        // Add click event listeners to TOC items
         this.attachTOCEventListeners();
-        
-        console.log('✓ TOC rendered with', this.tocItems.length, 'items and correct page numbers');
+        console.log('✓ TOC rendered with', this.tocItems.length, 'items');
     }
 
-    /**
-     * Create TOC HTML with verified page numbers
-     */
     createTOCHTML() {
         let html = '<ul class="toc-list">';
-        
-        this.tocItems.forEach((item, index) => {
-            const levelClass = `level-${Math.min(item.level, 3)}`;
-            
+
+        this.tocItems.forEach(item => {
+            const levelClass = `level-${item.level}`;
+            const activeClass = item.pageNumber === this.currentPage ? 'active' : '';
+
             html += `
                 <li class="toc-item">
-                    <a href="#" class="toc-link ${levelClass}" data-page="${item.pageNumber}" data-index="${index}">
+                    <a href="#" class="toc-link ${levelClass} ${activeClass}" data-page="${item.pageNumber}">
                         <span class="toc-title">${this.escapeHtml(item.title)}</span>
                         <span class="toc-page-num">${item.pageNumber}</span>
                     </a>
                 </li>
             `;
         });
-        
+
         html += '</ul>';
         return html;
     }
 
-    /**
-     * Fixed TOC event listeners with proper navigation
-     */
     attachTOCEventListeners() {
         const tocLinks = document.querySelectorAll('.toc-link');
-        
         tocLinks.forEach(link => {
-            link.addEventListener('click', async (e) => {
+            link.addEventListener('click', (e) => {
                 e.preventDefault();
-                
-                const pageNum = parseInt(e.currentTarget.getAttribute('data-page'));
-                const index = parseInt(e.currentTarget.getAttribute('data-index'));
-                
-                if (pageNum && pageNum > 0 && pageNum <= this.totalPages) {
-                    console.log('📍 Navigating to page', pageNum, 'from TOC item:', this.tocItems[index]?.title);
-                    
-                    // Navigate to the specific page
-                    await this.goToPage(pageNum);
-                    
-                    // Update active TOC item
-                    this.setActiveTOCItem(index);
-                    
-                    // Hide sidebar on mobile after navigation
-                    if (window.innerWidth <= 768) {
-                        this.hideSidebar();
-                    }
-                } else {
-                    console.warn('Invalid page number for navigation:', pageNum);
+                const pageNumber = parseInt(link.dataset.page);
+                if (!isNaN(pageNumber)) {
+                    this.goToPage(pageNumber);
                 }
             });
         });
     }
 
-    /**
-     * Fixed page navigation method
-     */
-    async goToPage(pageNum) {
-        if (pageNum < 1 || pageNum > this.totalPages) {
-            console.warn('Invalid page number:', pageNum);
-            return;
-        }
-        
-        this.currentPage = pageNum;
-        await this.renderCurrentPage();
-        this.updatePageInfo();
-        this.updateUIState();
-    }
-
-    /**
-     * Set active TOC item with visual feedback
-     */
-    setActiveTOCItem(index) {
-        // Remove previous active item
-        const previousActive = document.querySelector('.toc-link.active');
-        if (previousActive) {
-            previousActive.classList.remove('active');
-        }
-        
-        // Set new active item
-        const newActive = document.querySelector(`[data-index="${index}"]`);
-        if (newActive) {
-            newActive.classList.add('active');
-            this.activeTocItem = index;
-            
-            // Scroll active item into view
-            newActive.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-    }
-
-    /**
-     * Empty TOC handler
-     */
     renderEmptyTOC() {
         const tocContainer = document.getElementById('tocContainer');
         tocContainer.innerHTML = `
@@ -523,198 +962,207 @@ class PDFEbookReader {
         `;
     }
 
-    // PDF rendering methods
+    updateTocStatus(status) {
+        const tocStatus = document.getElementById('tocStatus');
+        if (tocStatus) {
+            tocStatus.textContent = status;
+        }
+    }
+
     async renderCurrentPage() {
         if (!this.pdfDoc) return;
 
         try {
-            if (this.isDoublePageMode && this.currentPage < this.totalPages) {
-                await this.renderDoublePage();
-            } else {
-                await this.renderSinglePage();
-            }
-            
-            this.updatePageInfo();
-            
+            const page = await this.pdfDoc.getPage(this.currentPage);
+            const viewport = page.getViewport({ scale: this.scale });
+
+            // Set up canvas
+            this.canvas1.height = viewport.height;
+            this.canvas1.width = viewport.width;
+            this.canvas1.classList.remove('hidden');
+
+            // Render PDF page
+            const renderContext = {
+                canvasContext: this.ctx1,
+                viewport: viewport
+            };
+
+            await page.render(renderContext).promise;
+
+            // Render text layer for selection
+            await this.renderTextLayer(page, viewport);
+
+            console.log(`📄 Rendered page ${this.currentPage}`);
         } catch (error) {
             console.error('Error rendering page:', error);
-            this.showError('Failed to render PDF page.');
         }
     }
 
-    async renderSinglePage() {
-        const page = await this.pdfDoc.getPage(this.currentPage);
-        const viewport = page.getViewport({ scale: this.scale });
-        
-        this.canvas1.width = viewport.width;
-        this.canvas1.height = viewport.height;
-        this.canvas1.classList.remove('hidden');
-        this.canvas2.classList.add('hidden');
-        
-        await page.render({
-            canvasContext: this.ctx1,
-            viewport: viewport
-        }).promise;
-    }
+    async renderTextLayer(page, viewport) {
+        const textLayer = document.getElementById('textLayer');
+        if (!textLayer) return;
 
-    async renderDoublePage() {
-        // Render current page
-        const page1 = await this.pdfDoc.getPage(this.currentPage);
-        const viewport1 = page1.getViewport({ scale: this.scale });
-        
-        this.canvas1.width = viewport1.width;
-        this.canvas1.height = viewport1.height;
-        this.canvas1.classList.remove('hidden');
-        
-        await page1.render({
-            canvasContext: this.ctx1,
-            viewport: viewport1
-        }).promise;
-        
-        // Render next page if available
-        if (this.currentPage < this.totalPages) {
-            const page2 = await this.pdfDoc.getPage(this.currentPage + 1);
-            const viewport2 = page2.getViewport({ scale: this.scale });
-            
-            this.canvas2.width = viewport2.width;
-            this.canvas2.height = viewport2.height;
-            this.canvas2.classList.remove('hidden');
-            
-            await page2.render({
-                canvasContext: this.ctx2,
-                viewport: viewport2
-            }).promise;
-        } else {
-            this.canvas2.classList.add('hidden');
+        try {
+            // Clear previous text layer
+            textLayer.innerHTML = '';
+
+            // Position text layer
+            textLayer.style.left = this.canvas1.offsetLeft + 'px';
+            textLayer.style.top = this.canvas1.offsetTop + 'px';
+            textLayer.style.height = this.canvas1.offsetHeight + 'px';
+            textLayer.style.width = this.canvas1.offsetWidth + 'px';
+
+            // Get text content
+            const textContent = await page.getTextContent();
+
+            // Render text layer using PDF.js
+            pdfjsLib.renderTextLayer({
+                textContent: textContent,
+                container: textLayer,
+                viewport: viewport,
+                textDivs: []
+            });
+        } catch (error) {
+            console.error('Error rendering text layer:', error);
         }
     }
 
     // Navigation methods
-    async previousPage() {
-        if (this.currentPage > 1) {
-            this.currentPage -= this.isDoublePageMode ? 2 : 1;
-            this.currentPage = Math.max(1, this.currentPage);
-            await this.renderCurrentPage();
-        }
+    previousPage() {
+        if (this.currentPage <= 1) return;
+        this.currentPage--;
+        this.renderCurrentPage();
+        this.updateUIState();
     }
 
-    async nextPage() {
-        if (this.currentPage < this.totalPages) {
-            this.currentPage += this.isDoublePageMode ? 2 : 1;
-            this.currentPage = Math.min(this.totalPages, this.currentPage);
-            await this.renderCurrentPage();
-        }
+    nextPage() {
+        if (this.currentPage >= this.totalPages) return;
+        this.currentPage++;
+        this.renderCurrentPage();
+        this.updateUIState();
     }
 
-    // Zoom methods
-    async zoomIn() {
-        this.scale = Math.min(this.scale * 1.2, 3.0);
-        await this.renderCurrentPage();
-        this.updateZoomInfo();
+    goToPage(pageNumber) {
+        if (pageNumber < 1 || pageNumber > this.totalPages) return;
+        this.currentPage = pageNumber;
+        this.renderCurrentPage();
+        this.updateUIState();
     }
 
-    async zoomOut() {
-        this.scale = Math.max(this.scale / 1.2, 0.5);
-        await this.renderCurrentPage();
-        this.updateZoomInfo();
-    }
-
-    async fitWidth() {
-        if (!this.pdfDoc) return;
-        
-        const page = await this.pdfDoc.getPage(this.currentPage);
-        const container = document.getElementById('pdfContainer');
-        const containerWidth = container.clientWidth - 32; // Account for padding
-        
-        const viewport = page.getViewport({ scale: 1.0 });
-        this.scale = containerWidth / viewport.width;
-        
-        await this.renderCurrentPage();
-        this.updateZoomInfo();
-    }
-
-    // View mode toggle
-    async toggleViewMode() {
+    toggleViewMode() {
         this.isDoublePageMode = !this.isDoublePageMode;
-        
-        const container = document.getElementById('pdfContainer');
-        const viewModeBtn = document.getElementById('viewMode');
-        
-        if (this.isDoublePageMode) {
-            container.classList.add('double-page');
-            viewModeBtn.textContent = 'Double Page';
-        } else {
-            container.classList.remove('double-page');
-            viewModeBtn.textContent = 'Single Page';
+        const toggleBtn = document.getElementById('toggleView');
+        if (toggleBtn) {
+            toggleBtn.textContent = this.isDoublePageMode ? 'Single Page' : 'Double Page';
         }
-        
-        await this.renderCurrentPage();
+        this.renderCurrentPage();
     }
 
-    // CRITICAL FIX: Sidebar methods
-    toggleSidebar() {
-        const sidebar = document.getElementById('sidebar');
-        console.log('🔧 Toggling sidebar, current classes:', sidebar.classList.toString());
-        console.log('🔧 Window width:', window.innerWidth);
-        
-        if (window.innerWidth <= 768) {
-            // Mobile: use 'show' class
-            const wasVisible = sidebar.classList.contains('show');
-            if (wasVisible) {
-                sidebar.classList.remove('show');
-                console.log('📱 Mobile: Hiding sidebar');
-            } else {
-                sidebar.classList.add('show');
-                console.log('📱 Mobile: Showing sidebar');
-            }
-            this.isSidebarVisible = !wasVisible;
-        } else {
-            // Desktop: use 'hidden' class
-            const wasHidden = sidebar.classList.contains('hidden');
-            if (wasHidden) {
-                sidebar.classList.remove('hidden');
-                console.log('🖥️ Desktop: Showing sidebar');
-            } else {
-                sidebar.classList.add('hidden');
-                console.log('🖥️ Desktop: Hiding sidebar');
-            }
-            this.isSidebarVisible = wasHidden;
-        }
-        
-        console.log('✅ Sidebar toggled, new classes:', sidebar.classList.toString(), 'visible:', this.isSidebarVisible);
-    }
-
-    hideSidebar() {
-        const sidebar = document.getElementById('sidebar');
-        
-        if (window.innerWidth <= 768) {
-            sidebar.classList.remove('show');
-        } else {
-            sidebar.classList.add('hidden');
-        }
-        
-        this.isSidebarVisible = false;
-    }
-
-    // Fullscreen toggle
     toggleFullscreen() {
-        try {
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen();
-                this.isFullscreen = true;
-            } else {
-                document.exitFullscreen();
-                this.isFullscreen = false;
-            }
-        } catch (e) {
-            console.log('Fullscreen not supported:', e);
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen();
+            this.isFullscreen = true;
+        } else {
+            document.exitFullscreen();
+            this.isFullscreen = false;
         }
     }
 
-    // Keyboard navigation
+    // UI State management
+    updateUIState() {
+        // Update page info
+        const pageInfo = document.getElementById('pageInfo');
+        if (pageInfo) {
+            if (this.totalPages > 0) {
+                pageInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
+            } else {
+                pageInfo.textContent = 'No PDF loaded';
+            }
+        }
+
+        // Update zoom display
+        this.updateZoomDisplay();
+
+        // Update navigation buttons
+        const prevBtn = document.getElementById('prevPage');
+        const nextBtn = document.getElementById('nextPage');
+
+        if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
+        if (nextBtn) nextBtn.disabled = this.currentPage >= this.totalPages;
+
+        // Update TOC active items
+        this.updateTOCActiveItem();
+    }
+
+    updateTOCActiveItem() {
+        const tocLinks = document.querySelectorAll('.toc-link');
+        tocLinks.forEach(link => {
+            const pageNumber = parseInt(link.dataset.page);
+            if (pageNumber === this.currentPage) {
+                link.classList.add('active');
+            } else {
+                link.classList.remove('active');
+            }
+        });
+    }
+
+    updateFileInfo(fileName, status) {
+        const fileInfo = document.getElementById('fileInfo');
+        const fileNameEl = document.getElementById('fileName');
+        const fileStatusEl = document.getElementById('fileStatus');
+
+        if (fileName) {
+            if (fileInfo) fileInfo.classList.remove('hidden');
+            if (fileNameEl) fileNameEl.textContent = fileName;
+            if (fileStatusEl) fileStatusEl.textContent = status;
+        } else {
+            if (fileInfo) fileInfo.classList.add('hidden');
+        }
+    }
+
+    hidePlaceholder() {
+        const placeholder = document.getElementById('pdfPlaceholder');
+        if (placeholder) {
+            placeholder.classList.add('hidden');
+        }
+    }
+
+    // Utility methods
+    showLoading(text = 'Loading...') {
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const loadingText = document.getElementById('loadingText');
+
+        if (loadingIndicator) loadingIndicator.classList.remove('hidden');
+        if (loadingText) loadingText.textContent = text;
+    }
+
+    hideLoading() {
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        if (loadingIndicator) loadingIndicator.classList.add('hidden');
+    }
+
+    showError(message) {
+        const errorModal = document.getElementById('errorModal');
+        const errorMessage = document.getElementById('errorMessage');
+
+        if (errorMessage) errorMessage.textContent = message;
+        if (errorModal) errorModal.classList.remove('hidden');
+    }
+
+    hideError() {
+        const errorModal = document.getElementById('errorModal');
+        if (errorModal) errorModal.classList.add('hidden');
+    }
+
+    showSuccess(message) {
+        // Simple success notification - could be enhanced with a proper toast system
+        console.log('✅', message);
+        // You could implement a toast notification system here
+    }
+
     handleKeyboard(e) {
-        if (!this.pdfDoc) return;
-        
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
         switch (e.key) {
             case 'ArrowLeft':
                 e.preventDefault();
@@ -724,143 +1172,56 @@ class PDFEbookReader {
                 e.preventDefault();
                 this.nextPage();
                 break;
-            case '=':
-            case '+':
+            case 'Home':
                 e.preventDefault();
-                this.zoomIn();
+                this.goToPage(1);
                 break;
-            case '-':
+            case 'End':
                 e.preventDefault();
-                this.zoomOut();
+                this.goToPage(this.totalPages);
                 break;
-            case '0':
-                e.preventDefault();
-                this.fitWidth();
-                break;
-            case 'f':
+            case 'F11':
                 e.preventDefault();
                 this.toggleFullscreen();
                 break;
         }
     }
 
-    // UI update methods
-    updatePageInfo() {
-        const pageInfo = document.getElementById('pageInfo');
-        if (this.totalPages === 0) {
-            pageInfo.textContent = 'No PDF loaded';
-        } else if (this.isDoublePageMode && this.currentPage < this.totalPages) {
-            pageInfo.textContent = `Pages ${this.currentPage}-${this.currentPage + 1} of ${this.totalPages}`;
-        } else {
-            pageInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
-        }
-    }
-
-    updateZoomInfo() {
-        document.getElementById('zoomLevel').textContent = `${Math.round(this.scale * 100)}%`;
-    }
-
-    updateFileInfo(fileName, status) {
-        const fileInfo = document.getElementById('fileInfo');
-        const fileNameEl = fileInfo.querySelector('.file-name');
-        const fileStatusEl = fileInfo.querySelector('.file-status');
-        
-        if (fileName) {
-            fileNameEl.textContent = fileName;
-            fileStatusEl.textContent = status;
-            fileInfo.classList.remove('hidden');
-        } else {
-            fileInfo.classList.add('hidden');
-        }
-    }
-
-    updateTocStatus(status) {
-        const tocStatusEl = document.getElementById('tocStatus');
-        if (tocStatusEl) {
-            tocStatusEl.textContent = status;
-        }
-    }
-
-    updateUIState() {
-        const hasDoc = !!this.pdfDoc;
-        
-        // Enable/disable controls based on document state
-        const prevBtn = document.getElementById('prevPage');
-        const nextBtn = document.getElementById('nextPage');
-        const zoomInBtn = document.getElementById('zoomIn');
-        const zoomOutBtn = document.getElementById('zoomOut');
-        const fitWidthBtn = document.getElementById('fitWidth');
-        
-        if (prevBtn) prevBtn.disabled = !hasDoc || this.currentPage <= 1;
-        if (nextBtn) nextBtn.disabled = !hasDoc || this.currentPage >= this.totalPages;
-        if (zoomInBtn) zoomInBtn.disabled = !hasDoc;
-        if (zoomOutBtn) zoomOutBtn.disabled = !hasDoc;
-        if (fitWidthBtn) fitWidthBtn.disabled = !hasDoc;
-        
-        this.updatePageInfo();
-        this.updateZoomInfo();
-    }
-
-    // UI state methods
-    hidePlaceholder() {
-        const placeholder = document.querySelector('.pdf-placeholder');
-        if (placeholder) {
-            placeholder.style.display = 'none';
-        }
-    }
-
-    showLoading(text = 'Loading...') {
-        const indicator = document.getElementById('loadingIndicator');
-        const loadingText = document.getElementById('loadingText');
-        if (indicator && loadingText) {
-            loadingText.textContent = text;
-            indicator.classList.remove('hidden');
-        }
-    }
-
-    hideLoading() {
-        const indicator = document.getElementById('loadingIndicator');
-        if (indicator) {
-            indicator.classList.add('hidden');
-        }
-    }
-
-    showError(message) {
-        const errorMessage = document.getElementById('errorMessage');
-        const errorModal = document.getElementById('errorModal');
-        if (errorMessage && errorModal) {
-            errorMessage.textContent = message;
-            errorModal.classList.remove('hidden');
-        }
-        console.error('❌ Error shown to user:', message);
-    }
-
-    hideError() {
-        const errorModal = document.getElementById('errorModal');
-        if (errorModal) {
-            errorModal.classList.add('hidden');
-        }
-    }
-
-    // Helper methods
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return text.replace(/[&<>"']/g, m => map[m]);
     }
 }
 
-// Initialize the application
+// Initialize the enhanced reader when the page loads
+let reader;
+
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('🚀 Initializing improved PDF eBook Reader');
-    console.log('✓ Fixed TOC navigation with proper async destination resolution');
-    console.log('✓ Improved layout: sidebar (30%) + main viewer (70%)');
-    console.log('✓ Upload area moved to sidebar');
-    console.log('✓ Enhanced error handling and user feedback');
-    console.log('✓ FINAL FIX: Upload functionality and sidebar toggle');
-    
-    // Create reader instance with delay to ensure DOM is ready
-    window.pdfReader = new PDFEbookReader();
-    
-    console.log('✅ Reader initialized successfully');
+    reader = new EnhancedPDFReader();
+
+    // Load saved data
+    reader.loadHighlights();
+
+    // Check for saved API key
+    try {
+        const savedKey = localStorage.getItem('pdf-reader-api-key');
+        if (savedKey) {
+            const apiKeyInput = document.getElementById('apiKeyInput');
+            if (apiKeyInput) {
+                apiKeyInput.value = savedKey;
+                // Auto-save the key
+                setTimeout(() => {
+                    document.getElementById('saveApiKey')?.click();
+                }, 100);
+            }
+        }
+    } catch (error) {
+        console.warn('Could not load saved API key:', error);
+    }
 });
