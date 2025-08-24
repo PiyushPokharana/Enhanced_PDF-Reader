@@ -2,16 +2,14 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 /**
- * Enhanced PDF E-book Reader with AI Integration and Advanced Features
- * Features:
- * 1. Right-side panel with AI agent, highlights, and notes
- * 2. AI agent integration for document analysis
- * 3. Text highlighting and storage
- * 4. Rich text notes editor with Quill
- * 5. Fixed zoom functionality with manual input
- * 6. Quick access icons
+ * Fixed Enhanced PDF E-book Reader
+ * Key fixes and improvements:
+ * 1. Fixed panel functionality with tab-based approach
+ * 2. Fixed AI API integration with proper error handling
+ * 3. Fixed double page view functionality
+ * 4. Enhanced fullscreen mode with auto-hiding controls
  */
-class EnhancedPDFReader {
+class FixedEnhancedPDFReader {
     constructor() {
         // PDF.js properties
         this.pdfDoc = null;
@@ -19,8 +17,6 @@ class EnhancedPDFReader {
         this.totalPages = 0;
         this.scale = 1.0;
         this.isDoublePageMode = false;
-        this.isSidebarVisible = true;
-        this.isRightPanelVisible = true;
         this.isFullscreen = false;
         this.isFitWidthMode = false;
 
@@ -35,23 +31,28 @@ class EnhancedPDFReader {
         this.ctx1 = this.canvas1?.getContext('2d');
         this.ctx2 = this.canvas2?.getContext('2d');
 
-        // New features
+        // Enhanced features
         this.highlights = [];
         this.aiApiKey = null;
         this.notesEditor = null;
         this.selectedText = '';
-        this.isSelecting = false;
+        this.currentTab = 'welcome';
+
+        // Fullscreen properties
+        this.fullscreenTimer = null;
+        this.mouseMoveTimer = null;
 
         // Initialize after DOM is ready
         setTimeout(() => {
             this.initializeEventListeners();
-            this.initializeRightPanel();
+            this.initializeTabSystem();
+            this.initializeFullscreenControls();
             this.updateUIState();
         }, 100);
     }
 
     initializeEventListeners() {
-        console.log('🔧 Initializing enhanced event listeners...');
+        console.log('🔧 Initializing fixed event listeners...');
 
         // File upload
         const uploadBtn = document.getElementById('uploadBtn');
@@ -105,22 +106,10 @@ class EnhancedPDFReader {
             });
         }
 
-        // View toggle
+        // Fixed view toggle
         const toggleViewBtn = document.getElementById('toggleView');
         if (toggleViewBtn) {
             toggleViewBtn.addEventListener('click', () => this.toggleViewMode());
-        }
-
-        // Sidebar controls
-        const toggleSidebarBtn = document.getElementById('toggleSidebar');
-        if (toggleSidebarBtn) {
-            toggleSidebarBtn.addEventListener('click', () => this.toggleSidebar());
-        }
-
-        // Right panel controls
-        const toggleRightPanelBtn = document.getElementById('toggleRightPanel');
-        if (toggleRightPanelBtn) {
-            toggleRightPanelBtn.addEventListener('click', () => this.toggleRightPanel());
         }
 
         // Fullscreen
@@ -128,15 +117,6 @@ class EnhancedPDFReader {
         if (fullscreenBtn) {
             fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
         }
-
-        // Quick access icons
-        const quickAI = document.getElementById('quickAI');
-        const quickHighlights = document.getElementById('quickHighlights');
-        const quickNotes = document.getElementById('quickNotes');
-
-        if (quickAI) quickAI.addEventListener('click', () => this.focusAISection());
-        if (quickHighlights) quickHighlights.addEventListener('click', () => this.focusHighlightsSection());
-        if (quickNotes) quickNotes.addEventListener('click', () => this.focusNotesSection());
 
         // AI Agent controls
         const saveApiKey = document.getElementById('saveApiKey');
@@ -184,14 +164,83 @@ class EnhancedPDFReader {
         // Text selection and highlighting
         this.initializeTextSelection();
 
-        console.log('✅ Enhanced event listeners initialized');
+        console.log('✅ Fixed event listeners initialized');
     }
 
-    initializeRightPanel() {
+    initializeTabSystem() {
+        console.log('🔧 Initializing new tab system...');
+
+        // Initialize tab system for right panel
+        const rightPanelIcons = document.querySelectorAll('.right-panel-icons .panel-icon');
+        rightPanelIcons.forEach(icon => {
+            icon.addEventListener('click', (e) => {
+                e.preventDefault();
+                const tabName = icon.getAttribute('data-tab');
+                this.switchToTab(tabName);
+            });
+        });
+
+        // Initialize left panel icons (currently just TOC)
+        const leftPanelIcons = document.querySelectorAll('.left-panel-icons .panel-icon');
+        leftPanelIcons.forEach(icon => {
+            icon.addEventListener('click', (e) => {
+                e.preventDefault();
+                // Left panel icons just add visual feedback for now
+                this.setActiveLeftIcon(icon);
+            });
+        });
+
         // Initialize Quill editor for notes
-        const notesEditor = document.getElementById('notesEditor');
-        if (notesEditor) {
-            this.notesEditor = new Quill(notesEditor, {
+        this.initializeNotesEditor();
+
+        console.log('✅ Tab system initialized');
+    }
+
+    switchToTab(tabName) {
+        console.log(`🔄 Switching to tab: ${tabName}`);
+
+        // Hide all tabs
+        const allTabs = document.querySelectorAll('.panel-tab');
+        allTabs.forEach(tab => tab.classList.add('hidden'));
+
+        // Remove active state from all icons
+        const allIcons = document.querySelectorAll('.right-panel-icons .panel-icon');
+        allIcons.forEach(icon => icon.classList.remove('active'));
+
+        // Show the selected tab
+        const targetTab = document.getElementById(`${tabName}Tab`);
+        if (targetTab) {
+            targetTab.classList.remove('hidden');
+            this.currentTab = tabName;
+
+            // Set active icon
+            const activeIcon = document.querySelector(`[data-tab="${tabName}"]`);
+            if (activeIcon) {
+                activeIcon.classList.add('active');
+            }
+
+            // Special handling for different tabs
+            if (tabName === 'ai') {
+                this.focusAIInput();
+            } else if (tabName === 'notes') {
+                this.focusNotesEditor();
+            }
+        }
+    }
+
+    setActiveLeftIcon(clickedIcon) {
+        // Remove active from all left icons
+        const leftIcons = document.querySelectorAll('.left-panel-icons .panel-icon');
+        leftIcons.forEach(icon => icon.classList.remove('active'));
+
+        // Add active to clicked icon
+        clickedIcon.classList.add('active');
+    }
+
+    initializeNotesEditor() {
+        const notesEditorElement = document.getElementById('notesEditor');
+        if (notesEditorElement) {
+            this.notesEditor = new Quill(notesEditorElement, {
                 theme: 'snow',
                 placeholder: 'Write your notes here...',
                 modules: {
@@ -204,51 +253,436 @@ class EnhancedPDFReader {
                     ]
                 }
             });
-        }
 
-        // Load saved notes
-        this.loadNotes();
+            // Load saved notes
+            this.loadNotes();
+        }
     }
 
-    initializeTextSelection() {
-        const textLayer = document.getElementById('textLayer');
-        if (textLayer) {
-            textLayer.addEventListener('mouseup', (e) => this.handleTextSelection(e));
-            textLayer.addEventListener('contextmenu', (e) => this.handleContextMenu(e));
-        }
+    initializeFullscreenControls() {
+        // Fullscreen overlay controls
+        const exitFullscreen = document.getElementById('exitFullscreen');
+        const fullscreenPrev = document.getElementById('fullscreenPrev');
+        const fullscreenNext = document.getElementById('fullscreenNext');
 
-        // Context menu for highlights
-        this.initializeHighlightContextMenu();
+        if (exitFullscreen) exitFullscreen.addEventListener('click', () => this.exitFullscreen());
+        if (fullscreenPrev) fullscreenPrev.addEventListener('click', () => this.previousPage());
+        if (fullscreenNext) fullscreenNext.addEventListener('click', () => this.nextPage());
 
-        // Hide context menu on click outside
-        document.addEventListener('click', () => this.hideContextMenu());
+        // Mouse movement detection for fullscreen
+        document.addEventListener('mousemove', () => this.handleFullscreenMouseMove());
+
+        // Listen for fullscreen changes
+        document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
     }
 
-    initializeHighlightContextMenu() {
-        const contextMenu = document.getElementById('highlightMenu');
-        if (!contextMenu) return;
+    handleFullscreenMouseMove() {
+        if (!this.isFullscreen) return;
 
-        const colors = ['yellow', 'green', 'blue', 'red'];
-        colors.forEach(color => {
-            const btn = document.getElementById(`highlight${color.charAt(0).toUpperCase() + color.slice(1)}`);
-            if (btn) {
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.highlightSelectedText(color);
-                    this.hideContextMenu();
-                });
+        const overlay = document.getElementById('fullscreenOverlay');
+        if (overlay) {
+            overlay.classList.remove('hidden');
+            overlay.classList.add('visible');
+
+            // Clear existing timer
+            if (this.mouseMoveTimer) {
+                clearTimeout(this.mouseMoveTimer);
             }
-        });
 
-        const removeBtn = document.getElementById('removeHighlight');
-        if (removeBtn) {
-            removeBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.removeHighlight();
-                this.hideContextMenu();
+            // Hide controls after 3 seconds of inactivity
+            this.mouseMoveTimer = setTimeout(() => {
+                overlay.classList.remove('visible');
+                overlay.classList.add('hidden');
+            }, 3000);
+        }
+    }
+
+    handleFullscreenChange() {
+        this.isFullscreen = !!document.fullscreenElement;
+        const overlay = document.getElementById('fullscreenOverlay');
+        const header = document.getElementById('appHeader');
+        const controls = document.getElementById('readerControls');
+
+        if (this.isFullscreen) {
+            // Hide normal UI elements
+            if (header) header.classList.add('hidden');
+            if (controls) controls.classList.add('hidden');
+
+            // Show fullscreen overlay
+            if (overlay) {
+                overlay.classList.remove('hidden');
+                this.updateFullscreenControls();
+            }
+        } else {
+            // Show normal UI elements
+            if (header) header.classList.remove('hidden');
+            if (controls) controls.classList.remove('hidden');
+
+            // Hide fullscreen overlay
+            if (overlay) overlay.classList.add('hidden');
+
+            // Clear timers
+            if (this.mouseMoveTimer) {
+                clearTimeout(this.mouseMoveTimer);
+            }
+        }
+    }
+
+    updateFullscreenControls() {
+        const pageInfo = document.getElementById('fullscreenPageInfo');
+        if (pageInfo) {
+            if (this.totalPages > 0) {
+                pageInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
+            } else {
+                pageInfo.textContent = 'No PDF loaded';
+            }
+        }
+    }
+
+    // Fixed API key handling
+    saveApiKey() {
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        if (!apiKeyInput) return;
+
+        const apiKey = apiKeyInput.value.trim();
+        if (!apiKey) {
+            this.showError('Please enter a valid OpenAI API key');
+            return;
+        }
+
+        if (!apiKey.startsWith('sk-')) {
+            this.showError('Invalid API key format. OpenAI API keys should start with "sk-"');
+            return;
+        }
+
+        this.aiApiKey = apiKey;
+
+        // Hide API key setup and show chat interface
+        const apiKeySetup = document.getElementById('apiKeySetup');
+        const chatInputContainer = document.getElementById('chatInputContainer');
+
+        if (apiKeySetup) apiKeySetup.classList.add('hidden');
+        if (chatInputContainer) chatInputContainer.classList.remove('hidden');
+
+        // Save to localStorage (in production, use proper encryption)
+        try {
+            localStorage.setItem('pdf-reader-api-key', apiKey);
+        } catch (error) {
+            console.warn('Could not save API key:', error);
+        }
+
+        this.addAIMessage('system', '✅ API key saved successfully! You can now ask questions about your documents.');
+        console.log('✅ API key saved and validated');
+    }
+
+    // Fixed AI message sending with better error handling
+    async sendAIMessage() {
+        const aiInput = document.getElementById('aiInput');
+        if (!aiInput || !this.aiApiKey) return;
+
+        const message = aiInput.value.trim();
+        if (!message) return;
+
+        // Add user message to chat
+        this.addAIMessage('user', message);
+        aiInput.value = '';
+
+        // Add loading message
+        const loadingId = this.addAIMessage('ai', '🤔 Thinking...');
+
+        try {
+            // Get document context
+            const documentContext = await this.getDocumentContext();
+
+            const response = await this.callOpenAI(message, documentContext);
+
+            // Replace loading message with response
+            this.updateAIMessage(loadingId, response);
+        } catch (error) {
+            console.error('AI API error:', error);
+            let errorMessage = '❌ Sorry, I encountered an error. ';
+
+            if (error.message.includes('401')) {
+                errorMessage += 'Please check your API key is correct and has sufficient credits.';
+            } else if (error.message.includes('429')) {
+                errorMessage += 'Rate limit exceeded. Please try again in a moment.';
+            } else if (error.message.includes('500')) {
+                errorMessage += 'OpenAI service is temporarily unavailable. Please try again later.';
+            } else {
+                errorMessage += 'Please try again or check your internet connection.';
+            }
+
+            this.updateAIMessage(loadingId, errorMessage);
+        }
+    }
+
+    // Fixed OpenAI API call with better error handling
+    async callOpenAI(message, context) {
+        try {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.aiApiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `You are a helpful AI assistant analyzing a PDF document. Here's the context from the document: ${context}. Please answer questions about this document accurately and concisely.`
+                        },
+                        {
+                            role: 'user',
+                            content: message
+                        }
+                    ],
+                    max_tokens: 500,
+                    temperature: 0.7
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+                throw new Error('Invalid response format from OpenAI');
+            }
+
+            return data.choices[0].message.content;
+        } catch (error) {
+            console.error('OpenAI API call failed:', error);
+            throw error;
+        }
+    }
+
+    // Fixed double page view functionality
+    toggleViewMode() {
+        this.isDoublePageMode = !this.isDoublePageMode;
+        const toggleBtn = document.getElementById('toggleView');
+
+        if (toggleBtn) {
+            toggleBtn.textContent = this.isDoublePageMode ? 'Single Page' : 'Double Page';
+        }
+
+        console.log(`🔄 View mode changed to: ${this.isDoublePageMode ? 'Double Page' : 'Single Page'}`);
+
+        // Re-render current page(s) with new view mode
+        if (this.pdfDoc) {
+            this.renderCurrentPage();
+        }
+    }
+
+    // Enhanced PDF rendering with double page support
+    async renderCurrentPage() {
+        if (!this.pdfDoc) return;
+
+        try {
+            if (this.isDoublePageMode) {
+                await this.renderDoublePages();
+            } else {
+                await this.renderSinglePage();
+            }
+
+            console.log(`📄 Rendered page ${this.currentPage} in ${this.isDoublePageMode ? 'double' : 'single'} page mode`);
+        } catch (error) {
+            console.error('Error rendering page:', error);
+        }
+    }
+
+    async renderSinglePage() {
+        const page = await this.pdfDoc.getPage(this.currentPage);
+        const viewport = page.getViewport({ scale: this.scale });
+
+        // Hide second canvas
+        this.canvas2.classList.add('hidden');
+
+        // Set up first canvas
+        this.canvas1.height = viewport.height;
+        this.canvas1.width = viewport.width;
+        this.canvas1.classList.remove('hidden');
+
+        // Render PDF page
+        const renderContext = {
+            canvasContext: this.ctx1,
+            viewport: viewport
+        };
+
+        await page.render(renderContext).promise;
+
+        // Render text layer for selection
+        await this.renderTextLayer(page, viewport);
+    }
+
+    async renderDoublePages() {
+        const container = document.querySelector('.pdf-container');
+        if (container) {
+            container.classList.add('double-page');
+        }
+
+        // Render first page
+        const page1 = await this.pdfDoc.getPage(this.currentPage);
+        const viewport1 = page1.getViewport({ scale: this.scale });
+
+        this.canvas1.height = viewport1.height;
+        this.canvas1.width = viewport1.width;
+        this.canvas1.classList.remove('hidden');
+
+        const renderContext1 = {
+            canvasContext: this.ctx1,
+            viewport: viewport1
+        };
+
+        await page1.render(renderContext1).promise;
+
+        // Render second page if available
+        if (this.currentPage < this.totalPages) {
+            const page2 = await this.pdfDoc.getPage(this.currentPage + 1);
+            const viewport2 = page2.getViewport({ scale: this.scale });
+
+            this.canvas2.height = viewport2.height;
+            this.canvas2.width = viewport2.width;
+            this.canvas2.classList.remove('hidden');
+
+            const renderContext2 = {
+                canvasContext: this.ctx2,
+                viewport: viewport2
+            };
+
+            await page2.render(renderContext2).promise;
+        } else {
+            this.canvas2.classList.add('hidden');
+        }
+
+        // Render text layer for first page
+        await this.renderTextLayer(page1, viewport1);
+    }
+
+    // Navigation methods with double page support
+    previousPage() {
+        if (this.currentPage <= 1) return;
+
+        if (this.isDoublePageMode) {
+            this.currentPage = Math.max(1, this.currentPage - 2);
+        } else {
+            this.currentPage--;
+        }
+
+        this.renderCurrentPage();
+        this.updateUIState();
+    }
+
+    nextPage() {
+        if (this.currentPage >= this.totalPages) return;
+
+        if (this.isDoublePageMode) {
+            this.currentPage = Math.min(this.totalPages, this.currentPage + 2);
+        } else {
+            this.currentPage++;
+        }
+
+        this.renderCurrentPage();
+        this.updateUIState();
+    }
+
+    goToPage(pageNumber) {
+        if (pageNumber < 1 || pageNumber > this.totalPages) return;
+        this.currentPage = pageNumber;
+        this.renderCurrentPage();
+        this.updateUIState();
+    }
+
+    // Focus helpers for tabs
+    focusAIInput() {
+        setTimeout(() => {
+            const aiInput = document.getElementById('aiInput');
+            if (aiInput && !aiInput.closest('.hidden')) {
+                aiInput.focus();
+            }
+        }, 300);
+    }
+
+    focusNotesEditor() {
+        setTimeout(() => {
+            if (this.notesEditor) {
+                this.notesEditor.focus();
+            }
+        }, 300);
+    }
+
+    // Enhanced fullscreen functionality
+    toggleFullscreen() {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().then(() => {
+                console.log('✅ Entered fullscreen mode');
+            }).catch(err => {
+                console.error('Error entering fullscreen:', err);
+                this.showError('Could not enter fullscreen mode');
+            });
+        } else {
+            this.exitFullscreen();
+        }
+    }
+
+    exitFullscreen() {
+        if (document.fullscreenElement) {
+            document.exitFullscreen().then(() => {
+                console.log('✅ Exited fullscreen mode');
+            }).catch(err => {
+                console.error('Error exiting fullscreen:', err);
             });
         }
     }
+
+    // UI State management with fullscreen support
+    updateUIState() {
+        // Update page info
+        const pageInfo = document.getElementById('pageInfo');
+        if (pageInfo) {
+            if (this.totalPages > 0) {
+                if (this.isDoublePageMode && this.currentPage < this.totalPages) {
+                    pageInfo.textContent = `Pages ${this.currentPage}-${this.currentPage + 1} of ${this.totalPages}`;
+                } else {
+                    pageInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
+                }
+            } else {
+                pageInfo.textContent = 'No PDF loaded';
+            }
+        }
+
+        // Update fullscreen controls
+        if (this.isFullscreen) {
+            this.updateFullscreenControls();
+        }
+
+        // Update zoom display
+        this.updateZoomDisplay();
+
+        // Update navigation buttons
+        const prevBtn = document.getElementById('prevPage');
+        const nextBtn = document.getElementById('nextPage');
+        const fullscreenPrev = document.getElementById('fullscreenPrev');
+        const fullscreenNext = document.getElementById('fullscreenNext');
+
+        const isAtStart = this.currentPage <= 1;
+        const isAtEnd = this.isDoublePageMode ?
+            this.currentPage >= this.totalPages - 1 :
+            this.currentPage >= this.totalPages;
+
+        if (prevBtn) prevBtn.disabled = isAtStart;
+        if (nextBtn) nextBtn.disabled = isAtEnd;
+        if (fullscreenPrev) fullscreenPrev.disabled = isAtStart;
+        if (fullscreenNext) fullscreenNext.disabled = isAtEnd;
+
+        // Update TOC active items
+        this.updateTOCActiveItem();
+    }
+
+    // All other methods from the original class remain the same
+    // (copying the working methods from the original implementation)
 
     initializeDragAndDrop() {
         const uploadArea = document.querySelector('.upload-area-compact');
@@ -284,7 +718,7 @@ class EnhancedPDFReader {
     }
 
     async handleFileUpload(file) {
-        console.log('📄 Handling enhanced file upload:', file.name);
+        console.log('📄 Handling file upload:', file.name);
 
         if (!file || file.type !== 'application/pdf') {
             this.showError('Please select a valid PDF file.');
@@ -321,7 +755,7 @@ class EnhancedPDFReader {
             // Update AI assistant with document info
             this.updateAIWithDocument(file.name);
 
-            console.log('🎉 Enhanced PDF successfully loaded and rendered');
+            console.log('🎉 PDF successfully loaded and rendered');
         } catch (error) {
             console.error('❌ Error loading PDF:', error);
             this.showError(`Failed to load PDF file: ${error.message}`);
@@ -330,7 +764,7 @@ class EnhancedPDFReader {
         }
     }
 
-    // Enhanced zoom functionality with manual input
+    // Enhanced zoom functionality
     setZoomFromInput() {
         const zoomInput = document.getElementById('zoomInfo');
         if (!zoomInput) return;
@@ -350,18 +784,15 @@ class EnhancedPDFReader {
         this.updateZoomDisplay();
     }
 
-    // Fixed fit width functionality
     toggleFitWidth() {
         const container = document.querySelector('.pdf-container');
         if (!container || !this.pdfDoc) return;
 
         if (this.isFitWidthMode) {
-            // Switch to fit height mode
             this.isFitWidthMode = false;
             this.fitToHeight();
             document.getElementById('fitWidth').textContent = 'Fit Height';
         } else {
-            // Switch to fit width mode
             this.isFitWidthMode = true;
             this.fitToWidth();
             document.getElementById('fitWidth').textContent = 'Fit Width';
@@ -370,13 +801,10 @@ class EnhancedPDFReader {
 
     async fitToWidth() {
         if (!this.pdfDoc) return;
-
         const container = document.querySelector('.pdf-container');
-        const containerWidth = container.clientWidth - 32; // Account for padding
-
+        const containerWidth = container.clientWidth - 32;
         const page = await this.pdfDoc.getPage(this.currentPage);
         const viewport = page.getViewport({ scale: 1.0 });
-
         this.scale = containerWidth / viewport.width;
         this.renderCurrentPage();
         this.updateZoomDisplay();
@@ -384,13 +812,10 @@ class EnhancedPDFReader {
 
     async fitToHeight() {
         if (!this.pdfDoc) return;
-
         const container = document.querySelector('.pdf-container');
-        const containerHeight = container.clientHeight - 32; // Account for padding
-
+        const containerHeight = container.clientHeight - 32;
         const page = await this.pdfDoc.getPage(this.currentPage);
         const viewport = page.getViewport({ scale: 1.0 });
-
         this.scale = containerHeight / viewport.height;
         this.renderCurrentPage();
         this.updateZoomDisplay();
@@ -427,6 +852,43 @@ class EnhancedPDFReader {
     }
 
     // Text selection and highlighting
+    initializeTextSelection() {
+        const textLayer = document.getElementById('textLayer');
+        if (textLayer) {
+            textLayer.addEventListener('mouseup', (e) => this.handleTextSelection(e));
+            textLayer.addEventListener('contextmenu', (e) => this.handleContextMenu(e));
+        }
+
+        this.initializeHighlightContextMenu();
+        document.addEventListener('click', () => this.hideContextMenu());
+    }
+
+    initializeHighlightContextMenu() {
+        const contextMenu = document.getElementById('highlightMenu');
+        if (!contextMenu) return;
+
+        const colors = ['yellow', 'green', 'blue', 'red'];
+        colors.forEach(color => {
+            const btn = document.getElementById(`highlight${color.charAt(0).toUpperCase() + color.slice(1)}`);
+            if (btn) {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.highlightSelectedText(color);
+                    this.hideContextMenu();
+                });
+            }
+        });
+
+        const removeBtn = document.getElementById('removeHighlight');
+        if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeHighlight();
+                this.hideContextMenu();
+            });
+        }
+    }
+
     handleTextSelection(e) {
         const selection = window.getSelection();
         if (selection.rangeCount > 0 && !selection.isCollapsed) {
@@ -479,7 +941,6 @@ class EnhancedPDFReader {
         this.updateHighlightsList();
         this.saveHighlights();
 
-        // Clear selection
         window.getSelection().removeAllRanges();
         this.selectedText = '';
 
@@ -487,8 +948,6 @@ class EnhancedPDFReader {
     }
 
     removeHighlight() {
-        // Implementation for removing specific highlight would go here
-        // For now, just clear selection
         window.getSelection().removeAllRanges();
         this.selectedText = '';
     }
@@ -557,101 +1016,10 @@ class EnhancedPDFReader {
         }
     }
 
-    // AI Agent functionality
-    saveApiKey() {
-        const apiKeyInput = document.getElementById('apiKeyInput');
-        if (!apiKeyInput) return;
-
-        const apiKey = apiKeyInput.value.trim();
-        if (!apiKey) {
-            this.showError('Please enter a valid OpenAI API key');
-            return;
-        }
-
-        this.aiApiKey = apiKey;
-
-        // Hide API key setup and show chat interface
-        const apiKeySetup = document.getElementById('apiKeySetup');
-        const chatInputContainer = document.getElementById('chatInputContainer');
-
-        if (apiKeySetup) apiKeySetup.classList.add('hidden');
-        if (chatInputContainer) chatInputContainer.classList.remove('hidden');
-
-        // Save to localStorage (encrypted in real implementation)
-        try {
-            localStorage.setItem('pdf-reader-api-key', apiKey);
-        } catch (error) {
-            console.warn('Could not save API key:', error);
-        }
-
-        this.addAIMessage('system', '✅ API key saved! You can now ask questions about your documents.');
-    }
-
-    async sendAIMessage() {
-        const aiInput = document.getElementById('aiInput');
-        if (!aiInput || !this.aiApiKey) return;
-
-        const message = aiInput.value.trim();
-        if (!message) return;
-
-        // Add user message to chat
-        this.addAIMessage('user', message);
-        aiInput.value = '';
-
-        // Add loading message
-        const loadingId = this.addAIMessage('ai', '🤔 Thinking...');
-
-        try {
-            // Get document context
-            const documentContext = await this.getDocumentContext();
-
-            const response = await this.callOpenAI(message, documentContext);
-
-            // Replace loading message with response
-            this.updateAIMessage(loadingId, response);
-        } catch (error) {
-            console.error('AI API error:', error);
-            this.updateAIMessage(loadingId, '❌ Sorry, I encountered an error. Please check your API key and try again.');
-        }
-    }
-
-    async callOpenAI(message, context) {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.aiApiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-3.5-turbo',
-                messages: [
-                    {
-                        role: 'system',
-                        content: `You are a helpful AI assistant analyzing a PDF document. Here's the context from the document: ${context}. Please answer questions about this document accurately and concisely.`
-                    },
-                    {
-                        role: 'user',
-                        content: message
-                    }
-                ],
-                max_tokens: 500,
-                temperature: 0.7
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`API error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        return data.choices[0].message.content;
-    }
-
     async getDocumentContext() {
         if (!this.pdfDoc) return 'No document loaded.';
 
         try {
-            // Extract text from current page and nearby pages for context
             let context = '';
             const startPage = Math.max(1, this.currentPage - 1);
             const endPage = Math.min(this.totalPages, this.currentPage + 1);
@@ -708,7 +1076,6 @@ class EnhancedPDFReader {
         this.addAIMessage('system', `📄 Document "${fileName}" loaded successfully! You can now ask me questions about its content.`);
     }
 
-    // Notes functionality
     saveNotes() {
         if (!this.notesEditor) return;
 
@@ -736,73 +1103,7 @@ class EnhancedPDFReader {
         }
     }
 
-    // Panel management
-    toggleSidebar() {
-        const sidebar = document.getElementById('leftSidebar');
-        const toggleIcon = document.getElementById('sidebarToggleIcon');
-
-        if (sidebar) {
-            this.isSidebarVisible = !this.isSidebarVisible;
-            if (this.isSidebarVisible) {
-                sidebar.classList.remove('hidden');
-                if (toggleIcon) toggleIcon.textContent = '◀';
-            } else {
-                sidebar.classList.add('hidden');
-                if (toggleIcon) toggleIcon.textContent = '▶';
-            }
-        }
-    }
-
-    toggleRightPanel() {
-        const rightPanel = document.getElementById('rightPanel');
-        const toggleIcon = document.getElementById('rightPanelToggleIcon');
-
-        if (rightPanel) {
-            this.isRightPanelVisible = !this.isRightPanelVisible;
-            if (this.isRightPanelVisible) {
-                rightPanel.classList.remove('hidden');
-                if (toggleIcon) toggleIcon.textContent = '▶';
-            } else {
-                rightPanel.classList.add('hidden');
-                if (toggleIcon) toggleIcon.textContent = '◀';
-            }
-        }
-    }
-
-    // Quick access functions
-    focusAISection() {
-        const aiSection = document.querySelector('.ai-section');
-        if (aiSection) {
-            aiSection.scrollIntoView({ behavior: 'smooth' });
-
-            // Focus on AI input if available
-            const aiInput = document.getElementById('aiInput');
-            if (aiInput && !aiInput.closest('.hidden')) {
-                setTimeout(() => aiInput.focus(), 300);
-            }
-        }
-    }
-
-    focusHighlightsSection() {
-        const highlightsSection = document.querySelector('.highlights-section');
-        if (highlightsSection) {
-            highlightsSection.scrollIntoView({ behavior: 'smooth' });
-        }
-    }
-
-    focusNotesSection() {
-        const notesSection = document.querySelector('.notes-section');
-        if (notesSection) {
-            notesSection.scrollIntoView({ behavior: 'smooth' });
-
-            // Focus on notes editor
-            if (this.notesEditor) {
-                setTimeout(() => this.notesEditor.focus(), 300);
-            }
-        }
-    }
-
-    // Existing methods (preserved and enhanced)
+    // TOC methods
     async extractTOC() {
         try {
             console.log('📖 Extracting table of contents...');
@@ -969,131 +1270,6 @@ class EnhancedPDFReader {
         }
     }
 
-    async renderCurrentPage() {
-        if (!this.pdfDoc) return;
-
-        try {
-            const page = await this.pdfDoc.getPage(this.currentPage);
-            const viewport = page.getViewport({ scale: this.scale });
-
-            // Set up canvas
-            this.canvas1.height = viewport.height;
-            this.canvas1.width = viewport.width;
-            this.canvas1.classList.remove('hidden');
-
-            // Render PDF page
-            const renderContext = {
-                canvasContext: this.ctx1,
-                viewport: viewport
-            };
-
-            await page.render(renderContext).promise;
-
-            // Render text layer for selection
-            await this.renderTextLayer(page, viewport);
-
-            console.log(`📄 Rendered page ${this.currentPage}`);
-        } catch (error) {
-            console.error('Error rendering page:', error);
-        }
-    }
-
-    async renderTextLayer(page, viewport) {
-        const textLayer = document.getElementById('textLayer');
-        if (!textLayer) return;
-
-        try {
-            // Clear previous text layer
-            textLayer.innerHTML = '';
-
-            // Position text layer
-            textLayer.style.left = this.canvas1.offsetLeft + 'px';
-            textLayer.style.top = this.canvas1.offsetTop + 'px';
-            textLayer.style.height = this.canvas1.offsetHeight + 'px';
-            textLayer.style.width = this.canvas1.offsetWidth + 'px';
-
-            // Get text content
-            const textContent = await page.getTextContent();
-
-            // Render text layer using PDF.js
-            pdfjsLib.renderTextLayer({
-                textContent: textContent,
-                container: textLayer,
-                viewport: viewport,
-                textDivs: []
-            });
-        } catch (error) {
-            console.error('Error rendering text layer:', error);
-        }
-    }
-
-    // Navigation methods
-    previousPage() {
-        if (this.currentPage <= 1) return;
-        this.currentPage--;
-        this.renderCurrentPage();
-        this.updateUIState();
-    }
-
-    nextPage() {
-        if (this.currentPage >= this.totalPages) return;
-        this.currentPage++;
-        this.renderCurrentPage();
-        this.updateUIState();
-    }
-
-    goToPage(pageNumber) {
-        if (pageNumber < 1 || pageNumber > this.totalPages) return;
-        this.currentPage = pageNumber;
-        this.renderCurrentPage();
-        this.updateUIState();
-    }
-
-    toggleViewMode() {
-        this.isDoublePageMode = !this.isDoublePageMode;
-        const toggleBtn = document.getElementById('toggleView');
-        if (toggleBtn) {
-            toggleBtn.textContent = this.isDoublePageMode ? 'Single Page' : 'Double Page';
-        }
-        this.renderCurrentPage();
-    }
-
-    toggleFullscreen() {
-        if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen();
-            this.isFullscreen = true;
-        } else {
-            document.exitFullscreen();
-            this.isFullscreen = false;
-        }
-    }
-
-    // UI State management
-    updateUIState() {
-        // Update page info
-        const pageInfo = document.getElementById('pageInfo');
-        if (pageInfo) {
-            if (this.totalPages > 0) {
-                pageInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
-            } else {
-                pageInfo.textContent = 'No PDF loaded';
-            }
-        }
-
-        // Update zoom display
-        this.updateZoomDisplay();
-
-        // Update navigation buttons
-        const prevBtn = document.getElementById('prevPage');
-        const nextBtn = document.getElementById('nextPage');
-
-        if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
-        if (nextBtn) nextBtn.disabled = this.currentPage >= this.totalPages;
-
-        // Update TOC active items
-        this.updateTOCActiveItem();
-    }
-
     updateTOCActiveItem() {
         const tocLinks = document.querySelectorAll('.toc-link');
         tocLinks.forEach(link => {
@@ -1104,6 +1280,30 @@ class EnhancedPDFReader {
                 link.classList.remove('active');
             }
         });
+    }
+
+    async renderTextLayer(page, viewport) {
+        const textLayer = document.getElementById('textLayer');
+        if (!textLayer) return;
+
+        try {
+            textLayer.innerHTML = '';
+            textLayer.style.left = this.canvas1.offsetLeft + 'px';
+            textLayer.style.top = this.canvas1.offsetTop + 'px';
+            textLayer.style.height = this.canvas1.offsetHeight + 'px';
+            textLayer.style.width = this.canvas1.offsetWidth + 'px';
+
+            const textContent = await page.getTextContent();
+
+            pdfjsLib.renderTextLayer({
+                textContent: textContent,
+                container: textLayer,
+                viewport: viewport,
+                textDivs: []
+            });
+        } catch (error) {
+            console.error('Error rendering text layer:', error);
+        }
     }
 
     updateFileInfo(fileName, status) {
@@ -1127,7 +1327,6 @@ class EnhancedPDFReader {
         }
     }
 
-    // Utility methods
     showLoading(text = 'Loading...') {
         const loadingIndicator = document.getElementById('loadingIndicator');
         const loadingText = document.getElementById('loadingText');
@@ -1155,9 +1354,7 @@ class EnhancedPDFReader {
     }
 
     showSuccess(message) {
-        // Simple success notification - could be enhanced with a proper toast system
         console.log('✅', message);
-        // You could implement a toast notification system here
     }
 
     handleKeyboard(e) {
@@ -1199,11 +1396,11 @@ class EnhancedPDFReader {
     }
 }
 
-// Initialize the enhanced reader when the page loads
+// Initialize the fixed reader when the page loads
 let reader;
 
 document.addEventListener('DOMContentLoaded', () => {
-    reader = new EnhancedPDFReader();
+    reader = new FixedEnhancedPDFReader();
 
     // Load saved data
     reader.loadHighlights();
@@ -1215,7 +1412,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const apiKeyInput = document.getElementById('apiKeyInput');
             if (apiKeyInput) {
                 apiKeyInput.value = savedKey;
-                // Auto-save the key
                 setTimeout(() => {
                     document.getElementById('saveApiKey')?.click();
                 }, 100);

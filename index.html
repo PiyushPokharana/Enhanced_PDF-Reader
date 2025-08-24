@@ -16,16 +16,11 @@
 <body>
     <div class="app-container">
         <!-- Header -->
-        <header class="app-header">
+        <header class="app-header" id="appHeader">
             <div class="header-content">
                 <h1>📚 Enhanced PDF Reader</h1>
                 <div class="header-controls">
-                    <button id="toggleSidebar" class="btn btn--secondary btn--sm">
-                        <span id="sidebarToggleIcon">◀</span> Toggle Sidebar
-                    </button>
-                    <button id="toggleRightPanel" class="btn btn--secondary btn--sm">
-                        Toggle Right Panel <span id="rightPanelToggleIcon">▶</span>
-                    </button>
+                    <button id="toggleView" class="btn btn--outline btn--sm">Double Page</button>
                     <button id="fullscreen" class="btn btn--outline btn--sm">⛶ Fullscreen</button>
                 </div>
             </div>
@@ -68,12 +63,18 @@
                         </div>
                     </div>
                 </section>
+
+                <!-- Left Panel Quick Access Icons -->
+                <div class="panel-icons left-panel-icons">
+                    <button id="leftTocIcon" class="panel-icon active" title="Table of Contents"
+                        data-tab="toc">📖</button>
+                </div>
             </aside>
 
             <!-- Center Content Area -->
             <div class="content-area">
                 <!-- PDF Reader Controls -->
-                <div class="reader-controls">
+                <div class="reader-controls" id="readerControls">
                     <div class="nav-controls">
                         <button id="prevPage" class="btn btn--secondary btn--sm">← Previous</button>
                         <span class="page-info" id="pageInfo">No PDF loaded</span>
@@ -87,7 +88,6 @@
                         </span>
                         <button id="zoomIn" class="btn btn--secondary btn--sm">+</button>
                         <button id="fitWidth" class="btn btn--outline btn--sm">Fit Width</button>
-                        <button id="toggleView" class="btn btn--outline btn--sm">Double Page</button>
                     </div>
                 </div>
 
@@ -118,64 +118,87 @@
 
             <!-- Right Panel -->
             <aside class="right-panel" id="rightPanel">
-                <!-- AI Agent Section -->
-                <section class="panel-section ai-section">
-                    <div class="panel-section-header">
-                        <h3>🤖 AI Assistant</h3>
-                        <button id="clearChat" class="btn btn--secondary btn--sm">Clear</button>
-                    </div>
-                    <div class="ai-content">
-                        <div class="ai-chat-container" id="aiChatContainer">
-                            <div class="ai-message system-message">
-                                <p>👋 Hi! I'm your AI assistant. Upload a PDF and I'll help you analyze and understand
-                                    its content. Ask me questions about the document!</p>
+                <!-- Dynamic Content Area -->
+                <div class="panel-content" id="panelContent">
+                    <!-- AI Assistant Tab -->
+                    <div class="panel-tab hidden" id="aiTab">
+                        <div class="panel-section-header">
+                            <h3>🤖 AI Assistant</h3>
+                            <button id="clearChat" class="btn btn--secondary btn--sm">Clear</button>
+                        </div>
+                        <div class="tab-content">
+                            <div class="ai-chat-container" id="aiChatContainer">
+                                <div class="ai-message system-message">
+                                    <p>👋 Hi! I'm your AI assistant. Upload a PDF and I'll help you analyze and
+                                        understand its content. Ask me questions about the document!</p>
+                                </div>
+                            </div>
+                            <div class="ai-input-area">
+                                <div class="api-key-setup" id="apiKeySetup">
+                                    <input type="password" id="apiKeyInput" placeholder="Enter your OpenAI API key..."
+                                        class="form-control">
+                                    <button id="saveApiKey" class="btn btn--primary btn--sm">Save Key</button>
+                                </div>
+                                <div class="chat-input-container hidden" id="chatInputContainer">
+                                    <textarea id="aiInput" placeholder="Ask a question about the document..." rows="2"
+                                        class="form-control"></textarea>
+                                    <button id="sendMessage" class="btn btn--primary btn--sm">Send</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="ai-input-area">
-                            <div class="api-key-setup" id="apiKeySetup">
-                                <input type="password" id="apiKeyInput" placeholder="Enter your OpenAI API key..."
-                                    class="form-control">
-                                <button id="saveApiKey" class="btn btn--primary btn--sm">Save Key</button>
-                            </div>
-                            <div class="chat-input-container hidden" id="chatInputContainer">
-                                <textarea id="aiInput" placeholder="Ask a question about the document..." rows="2"
-                                    class="form-control"></textarea>
-                                <button id="sendMessage" class="btn btn--primary btn--sm">Send</button>
+                    </div>
+
+                    <!-- Highlights Tab -->
+                    <div class="panel-tab hidden" id="highlightsTab">
+                        <div class="panel-section-header">
+                            <h3>✨ Highlights</h3>
+                            <button id="clearHighlights" class="btn btn--secondary btn--sm">Clear All</button>
+                        </div>
+                        <div class="tab-content">
+                            <div class="highlights-content" id="highlightsContent">
+                                <div class="highlights-placeholder">
+                                    <p>📝 Highlighted text will appear here</p>
+                                    <small>Select text in the PDF to highlight it</small>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </section>
 
-                <!-- Highlights Section -->
-                <section class="panel-section highlights-section">
-                    <div class="panel-section-header">
-                        <h3>✨ Highlights</h3>
-                        <button id="clearHighlights" class="btn btn--secondary btn--sm">Clear All</button>
-                    </div>
-                    <div class="highlights-content" id="highlightsContent">
-                        <div class="highlights-placeholder">
-                            <p>📝 Highlighted text will appear here</p>
-                            <small>Select text in the PDF to highlight it</small>
+                    <!-- Notes Tab -->
+                    <div class="panel-tab hidden" id="notesTab">
+                        <div class="panel-section-header">
+                            <h3>📝 Notes</h3>
+                            <button id="saveNotes" class="btn btn--primary btn--sm">Save</button>
+                        </div>
+                        <div class="tab-content">
+                            <div class="notes-content">
+                                <div id="notesEditor" class="notes-editor"></div>
+                            </div>
                         </div>
                     </div>
-                </section>
 
-                <!-- Notes Section -->
-                <section class="panel-section notes-section">
-                    <div class="panel-section-header">
-                        <h3>📝 Notes</h3>
-                        <button id="saveNotes" class="btn btn--primary btn--sm">Save</button>
+                    <!-- Default Welcome Content -->
+                    <div class="panel-tab" id="welcomeTab">
+                        <div class="welcome-content">
+                            <div class="welcome-icon">🚀</div>
+                            <h3>Enhanced Features</h3>
+                            <p>Click the icons below to access powerful features:</p>
+                            <ul class="feature-list">
+                                <li>🤖 <strong>AI Assistant</strong> - Ask questions about your document</li>
+                                <li>✨ <strong>Highlights</strong> - Mark and save important text</li>
+                                <li>📝 <strong>Notes</strong> - Take rich text notes</li>
+                            </ul>
+                            <p><small>Upload a PDF to get started!</small></p>
+                        </div>
                     </div>
-                    <div class="notes-content">
-                        <div id="notesEditor" class="notes-editor"></div>
-                    </div>
-                </section>
+                </div>
 
-                <!-- Quick Access Icons -->
-                <div class="quick-access-icons">
-                    <button id="quickAI" class="quick-icon" title="AI Assistant">🤖</button>
-                    <button id="quickHighlights" class="quick-icon" title="Highlights">✨</button>
-                    <button id="quickNotes" class="quick-icon" title="Notes">📝</button>
+                <!-- Right Panel Quick Access Icons -->
+                <div class="panel-icons right-panel-icons">
+                    <button id="rightAIIcon" class="panel-icon" title="AI Assistant" data-tab="ai">🤖</button>
+                    <button id="rightHighlightsIcon" class="panel-icon" title="Highlights"
+                        data-tab="highlights">✨</button>
+                    <button id="rightNotesIcon" class="panel-icon" title="Notes" data-tab="notes">📝</button>
                 </div>
             </aside>
         </main>
@@ -210,6 +233,18 @@
         <button id="highlightBlue" class="context-menu-item">🔵 Blue</button>
         <button id="highlightRed" class="context-menu-item">🔴 Red</button>
         <button id="removeHighlight" class="context-menu-item">❌ Remove</button>
+    </div>
+
+    <!-- Fullscreen UI Controls Overlay -->
+    <div class="fullscreen-overlay hidden" id="fullscreenOverlay">
+        <div class="fullscreen-controls">
+            <button id="exitFullscreen" class="btn btn--secondary btn--sm">Exit Fullscreen</button>
+            <div class="fullscreen-nav">
+                <button id="fullscreenPrev" class="btn btn--secondary btn--sm">← Previous</button>
+                <span id="fullscreenPageInfo" class="page-info">Page 1 of 1</span>
+                <button id="fullscreenNext" class="btn btn--secondary btn--sm">Next →</button>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>
