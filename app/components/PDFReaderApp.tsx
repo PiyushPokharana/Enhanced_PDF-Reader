@@ -543,7 +543,7 @@ function PDFReaderInitializer() {
         const initializeReader = async () => {
             // Load the original app.js logic
             const script = document.createElement('script');
-            script.src = '/app.js';
+            script.src = 'public/app.js';
             script.type = 'text/javascript';
 
             // Critical: Wait for script to load, then manually trigger initialization
