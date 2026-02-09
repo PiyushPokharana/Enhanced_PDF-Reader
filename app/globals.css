@@ -804,6 +804,26 @@ textarea.form-control {
     box-shadow: var(--shadow-lg), 0 0 40px rgba(0, 0, 0, 0.3);
 }
 
+.ocr-page-toggle {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    z-index: 5;
+    min-width: 88px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.ocr-page-toggle.active {
+    background: linear-gradient(135deg, var(--color-cyan-500), var(--color-cyan-600));
+    color: var(--color-bg-dark-1);
+    border-color: transparent;
+}
+
+.ocr-page-toggle.loading {
+    opacity: 0.9;
+}
+
 /* Text layer - positioned relative to page wrapper */
 .text-layer {
     position: absolute;

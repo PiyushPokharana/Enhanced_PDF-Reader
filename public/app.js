@@ -1,8 +1,7 @@
-// Set PDF.js worker - this will be overridden by PDFReaderApp.tsx
-// The React component sets the correct worker URL using pdfjsLib.version
-// This line is kept for compatibility but won't execute in Next.js (window.pdfjsLib is set by React)
+// Set PDF.js worker path — use locally bundled worker for offline support & version consistency
+// In Next.js this is overridden by PDFReaderApp.tsx before app.js loads
 if (typeof pdfjsLib !== 'undefined' && typeof pdfjsLib.GlobalWorkerOptions !== 'undefined') {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/lib/pdf.worker.min.mjs';
 }
 
 /**
@@ -23,6 +22,7 @@ class FixedEnhancedPDFReader {
         this.isDoublePageMode = false;
         this.isFullscreen = false;
         this.isFitWidthMode = false;
+        this.isFitHeightMode = false;
         this.isReadingMode = false;
 
         // TOC properties
@@ -45,17 +45,31 @@ class FixedEnhancedPDFReader {
         this.textLayer2 = document.getElementById('textLayer2');
         this.ocrLayer1 = document.getElementById('ocrLayer');
         this.ocrLayer2 = document.getElementById('ocrLayer2');
+        this.ocrToggleBtn1 = document.getElementById('toggleOCRPage1');
+        this.ocrToggleBtn2 = document.getElementById('toggleOCRPage2');
 
         // OCR overlay state
         this.ocrDataByPage = new Map();
+        this.ocrCacheManager = this.createOCRCacheManager();
+        this.ocrWorkerManager = this.createOCRWorkerManager();
         this.ocrDebugMode = false;
         this.defaultOCRDpi = 300;
         this.ocrRenderScale = 3;
+        this.ocrPreparationRange = 1;
+        this.ocrCacheDistance = 3;
+        this.ocrMaxConcurrent = 1;
         this.nativeTextCharThreshold = 20;
         this.pageTextSourceByPage = new Map();
         this.pageTextStatsByPage = new Map();
         this.ocrJobsByPage = new Map();
+        this.ocrViewEnabledByPage = new Map();
+        this.backgroundOCRChain = Promise.resolve();
+        this.ocrMeasureCanvas = null;
+        this.ocrMeasureCtx = null;
+        this.ocrSessionId = 0;
         this.resizeDebounceTimer = null;
+        this.pageVisibilityObserver = null;
+        this.pageVisibilityRoot = null;
 
         // Enhanced features
         this.highlights = [];
@@ -67,6 +81,9 @@ class FixedEnhancedPDFReader {
         // Fullscreen properties
         this.fullscreenTimer = null;
         this.mouseMoveTimer = null;
+
+        // Bound event handlers (stored for cleanup/removal)
+        this._boundHandlers = {};
 
         // Sidebar collapse states (persist in localStorage)
         this.leftSidebarCollapsed = localStorage.getItem('leftSidebarCollapsed') === 'true';
@@ -86,6 +103,7 @@ class FixedEnhancedPDFReader {
             this.initializeFullscreenControls();
             this.initializePanelToggles();
             this.initializeResizeHandling();
+            this.initializePageVisibilityObserver();
             this.updateOCRDebugButton();
             this.updateUIState();
         }, 100);
@@ -164,6 +182,14 @@ class FixedEnhancedPDFReader {
             toggleOCRDebugBtn.addEventListener('click', () => this.setOCRDebugMode());
         }
 
+        // Per-page OCR toggle buttons
+        if (this.ocrToggleBtn1) {
+            this.ocrToggleBtn1.addEventListener('click', () => this.toggleOCRForRenderedSlot(1));
+        }
+        if (this.ocrToggleBtn2) {
+            this.ocrToggleBtn2.addEventListener('click', () => this.toggleOCRForRenderedSlot(2));
+        }
+
         // Fullscreen
         const fullscreenBtn = document.getElementById('fullscreen');
         if (fullscreenBtn) {
@@ -214,7 +240,8 @@ class FixedEnhancedPDFReader {
         if (errorOk) errorOk.addEventListener('click', () => this.hideError());
 
         // Keyboard navigation
-        document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+        this._boundHandlers.keydown = (e) => this.handleKeyboard(e);
+        document.addEventListener('keydown', this._boundHandlers.keydown);
 
         // Drag and drop
         this.initializeDragAndDrop();
@@ -298,6 +325,22 @@ class FixedEnhancedPDFReader {
     initializeNotesEditor() {
         const notesEditorElement = document.getElementById('notesEditor');
         if (notesEditorElement && typeof Quill !== 'undefined') {
+            // Destroy existing Quill instance to prevent memory leaks on reinit
+            if (this.notesEditor) {
+                // Save current content before destroying
+                const currentContent = this.notesEditor.root.innerHTML;
+                this.notesEditor.off('text-change');
+                this.notesEditor = null;
+                // Clear the editor container so Quill can reinitialize cleanly
+                notesEditorElement.innerHTML = '';
+                notesEditorElement.classList.remove('ql-container', 'ql-snow');
+                // Remove any leftover toolbar created by previous Quill instance
+                const oldToolbar = notesEditorElement.previousElementSibling;
+                if (oldToolbar && oldToolbar.classList.contains('ql-toolbar')) {
+                    oldToolbar.remove();
+                }
+            }
+
             this.notesEditor = new Quill(notesEditorElement, {
                 theme: 'snow',
                 placeholder: 'Write your notes here...',
@@ -328,10 +371,12 @@ class FixedEnhancedPDFReader {
         if (fullscreenNext) fullscreenNext.addEventListener('click', () => this.nextPage());
 
         // Mouse movement detection for fullscreen
-        document.addEventListener('mousemove', () => this.handleFullscreenMouseMove());
+        this._boundHandlers.mousemove = () => this.handleFullscreenMouseMove();
+        document.addEventListener('mousemove', this._boundHandlers.mousemove);
 
         // Listen for fullscreen changes
-        document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
+        this._boundHandlers.fullscreenchange = () => this.handleFullscreenChange();
+        document.addEventListener('fullscreenchange', this._boundHandlers.fullscreenchange);
     }
 
     initializePanelToggles() {
@@ -372,7 +417,11 @@ class FixedEnhancedPDFReader {
         sidebar.classList.toggle('collapsed', this.leftSidebarCollapsed);
 
         // Persist state
-        localStorage.setItem('leftSidebarCollapsed', this.leftSidebarCollapsed);
+        try {
+            localStorage.setItem('leftSidebarCollapsed', this.leftSidebarCollapsed);
+        } catch (error) {
+            console.warn('Could not save sidebar state:', error);
+        }
         console.log(`📂 Left sidebar ${this.leftSidebarCollapsed ? 'collapsed' : 'expanded'}`);
     }
 
@@ -384,7 +433,11 @@ class FixedEnhancedPDFReader {
         panel.classList.toggle('collapsed', this.rightPanelCollapsed);
 
         // Persist state
-        localStorage.setItem('rightPanelCollapsed', this.rightPanelCollapsed);
+        try {
+            localStorage.setItem('rightPanelCollapsed', this.rightPanelCollapsed);
+        } catch (error) {
+            console.warn('Could not save panel state:', error);
+        }
         console.log(`📂 Right panel ${this.rightPanelCollapsed ? 'collapsed' : 'expanded'}`);
     }
 
@@ -402,7 +455,7 @@ class FixedEnhancedPDFReader {
     }
 
     initializeResizeHandling() {
-        window.addEventListener('resize', () => {
+        this._boundHandlers.resize = () => {
             if (!this.pdfDoc) return;
 
             if (this.resizeDebounceTimer) {
@@ -413,6 +466,8 @@ class FixedEnhancedPDFReader {
                 try {
                     if (this.isFitWidthMode) {
                         await this.fitToWidth();
+                    } else if (this.isFitHeightMode) {
+                        await this.fitToHeight();
                     } else {
                         await this.renderCurrentPage();
                     }
@@ -420,7 +475,8 @@ class FixedEnhancedPDFReader {
                     console.warn('Resize re-render failed:', error);
                 }
             }, 120);
-        });
+        };
+        window.addEventListener('resize', this._boundHandlers.resize);
     }
 
     handleFullscreenMouseMove() {
@@ -468,9 +524,14 @@ class FixedEnhancedPDFReader {
             // Hide fullscreen overlay
             if (overlay) overlay.classList.add('hidden');
 
-            // Clear timers
+            // Clear all fullscreen timers
+            if (this.fullscreenTimer) {
+                clearTimeout(this.fullscreenTimer);
+                this.fullscreenTimer = null;
+            }
             if (this.mouseMoveTimer) {
                 clearTimeout(this.mouseMoveTimer);
+                this.mouseMoveTimer = null;
             }
         }
     }
@@ -634,10 +695,314 @@ class FixedEnhancedPDFReader {
                 await this.renderSinglePage();
             }
 
+            this.handleVisiblePage(this.currentPage);
+
             console.log(`📄 Rendered page ${this.currentPage} in ${this.isDoublePageMode ? 'double' : 'single'} page mode`);
         } catch (error) {
             console.error('Error rendering page:', error);
         }
+    }
+
+    initializePageVisibilityObserver() {
+        if (typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return;
+
+        // Disconnect any existing observer to prevent leaks when reinitializing
+        if (this.pageVisibilityObserver) {
+            this.pageVisibilityObserver.disconnect();
+            this.pageVisibilityObserver = null;
+        }
+
+        const root = document.querySelector('.reader-area') || document.querySelector('.pdf-container');
+        this.pageVisibilityRoot = root || null;
+
+        this.pageVisibilityObserver = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    const pageNumber = Number(entry?.target?.dataset?.pageNumber);
+                    if (!Number.isInteger(pageNumber)) return;
+                    if (!entry.isIntersecting) {
+                        this.cancelOCRForPage(pageNumber);
+                        return;
+                    }
+                    this.handleVisiblePage(pageNumber);
+                });
+            },
+            {
+                root: this.pageVisibilityRoot,
+                rootMargin: '120px 0px',
+                threshold: 0.15
+            }
+        );
+
+        this.refreshPageVisibilityObserver();
+    }
+
+    refreshPageVisibilityObserver() {
+        if (!this.pageVisibilityObserver) return;
+        this.pageVisibilityObserver.disconnect();
+
+        if (this.pageWrapper1) {
+            this.pageVisibilityObserver.observe(this.pageWrapper1);
+        }
+        if (this.pageWrapper2) {
+            this.pageVisibilityObserver.observe(this.pageWrapper2);
+        }
+    }
+
+    assignPageWrapperNumber(wrapper, pageNumber) {
+        if (!wrapper) return;
+        if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+            delete wrapper.dataset.pageNumber;
+            return;
+        }
+        wrapper.dataset.pageNumber = String(pageNumber);
+    }
+
+    getRenderedPageNumberForSlot(slotNumber) {
+        const wrapper = slotNumber === 2 ? this.pageWrapper2 : this.pageWrapper1;
+        if (!wrapper || wrapper.classList.contains('hidden')) return null;
+        const pageNumber = Number(wrapper?.dataset?.pageNumber);
+        if (!Number.isInteger(pageNumber) || pageNumber < 1) return null;
+        return pageNumber;
+    }
+
+    isPageCurrentlyRendered(pageNumber) {
+        if (!Number.isInteger(pageNumber) || pageNumber < 1) return false;
+        const isPrimary = pageNumber === this.currentPage;
+        const isSecondary = this.isDoublePageMode && pageNumber === this.currentPage + 1;
+        return isPrimary || isSecondary;
+    }
+
+    setOCRViewEnabled(pageNumber, enabled) {
+        const normalizedPageNumber = Number(pageNumber);
+        if (!Number.isInteger(normalizedPageNumber) || normalizedPageNumber < 1) return;
+
+        if (enabled) {
+            this.ocrViewEnabledByPage.set(normalizedPageNumber, true);
+        } else {
+            this.ocrViewEnabledByPage.delete(normalizedPageNumber);
+        }
+    }
+
+    getOCRButtonState(pageNumber) {
+        const hasPage = Number.isInteger(pageNumber) && pageNumber > 0;
+        if (!hasPage) {
+            return { disabled: true, active: false, loading: false, text: 'OCR', pageNumber: null };
+        }
+
+        const isPreparing = this.ocrJobsByPage.has(pageNumber);
+        const isCached = this.hasCachedOCR(pageNumber);
+        const isEnabled = this.ocrViewEnabledByPage.get(pageNumber) === true;
+
+        let text;
+        if (isPreparing) {
+            text = `OCR... P${pageNumber}`;
+        } else if (isEnabled) {
+            text = `OCR On P${pageNumber}`;
+        } else if (isCached) {
+            text = `OCR Ready P${pageNumber}`;
+        } else {
+            text = `Run OCR P${pageNumber}`;
+        }
+
+        return {
+            disabled: isPreparing,
+            active: isEnabled,
+            loading: isPreparing,
+            text,
+            pageNumber
+        };
+    }
+
+    updateOCRToggleButton(button, pageNumber) {
+        if (!button) return;
+
+        const state = this.getOCRButtonState(pageNumber);
+
+        button.disabled = state.disabled;
+        button.classList.toggle('active', state.active);
+        button.classList.toggle('loading', state.loading);
+        button.dataset.pageNumber = state.pageNumber != null ? String(state.pageNumber) : '';
+        button.textContent = state.text;
+    }
+
+    updateOCRToggleButtons() {
+        this.updateOCRToggleButton(this.ocrToggleBtn1, this.getRenderedPageNumberForSlot(1));
+        this.updateOCRToggleButton(this.ocrToggleBtn2, this.getRenderedPageNumberForSlot(2));
+    }
+
+    async toggleOCRForRenderedSlot(slotNumber) {
+        const pageNumber = this.getRenderedPageNumberForSlot(slotNumber);
+        if (!pageNumber) return;
+        await this.toggleOCRForPage(pageNumber);
+    }
+
+    async toggleOCRForPage(pageNumber) {
+        const normalizedPageNumber = Number(pageNumber);
+        if (!Number.isInteger(normalizedPageNumber) || normalizedPageNumber < 1 || !this.pdfDoc) {
+            return;
+        }
+
+        const isEnabled = this.ocrViewEnabledByPage.get(normalizedPageNumber) === true;
+        if (isEnabled) {
+            this.setOCRViewEnabled(normalizedPageNumber, false);
+            this.syncOCRButtonsAndRender(normalizedPageNumber);
+            return;
+        }
+
+        if (this.hasCachedOCR(normalizedPageNumber)) {
+            this.setOCRViewEnabled(normalizedPageNumber, true);
+            this.syncOCRButtonsAndRender(normalizedPageNumber);
+            return;
+        }
+
+        if (!this.isOCREngineAvailable()) {
+            this.showError('OCR worker is not available.');
+            return;
+        }
+
+        const preparationPromise = this.ensureOCRForPage(null, normalizedPageNumber);
+        this.updateOCRToggleButtons(); // Show loading state immediately
+        const prepared = await preparationPromise;
+        if (!prepared) {
+            this.updateOCRToggleButtons();
+            return;
+        }
+
+        this.setOCRViewEnabled(normalizedPageNumber, true);
+        this.syncOCRButtonsAndRender(normalizedPageNumber);
+    }
+
+    async syncOCRButtonsAndRender(pageNumber) {
+        this.updateOCRToggleButtons();
+        if (this.isPageCurrentlyRendered(pageNumber)) {
+            await this.renderCurrentPage();
+            this.updateUIState();
+        }
+    }
+
+    handleVisiblePage(pageNumber) {
+        if (!this.pdfDoc) return;
+
+        const anchorPage = this.currentPage;
+        const isVisibleAnchor = pageNumber === anchorPage;
+        const isVisibleSecondPage = this.isDoublePageMode && pageNumber === anchorPage + 1;
+        if (!isVisibleAnchor && !isVisibleSecondPage) return;
+
+        this.scheduleBackgroundOCRPreparation(anchorPage);
+        this.evictFarOCRPages(anchorPage);
+    }
+
+    cancelOCRForPage(pageNumber) {
+        const normalizedPageNumber = Number(pageNumber);
+        if (!Number.isInteger(normalizedPageNumber) || normalizedPageNumber < 1) return false;
+
+        const job = this.ocrJobsByPage.get(normalizedPageNumber);
+        if (!job) return false;
+
+        if (job.controller && typeof job.controller.abort === 'function') {
+            job.controller.abort();
+        }
+
+        this.ocrJobsByPage.delete(normalizedPageNumber);
+        this.updateOCRToggleButtons();
+        return true;
+    }
+
+    /**
+     * Cancel ALL in-flight OCR jobs immediately.
+     * Aborts every AbortController and clears the jobs map.
+     * Should be called before loading a new document or replacing OCR data.
+     */
+    cancelAllOCRJobs() {
+        for (const [, job] of this.ocrJobsByPage) {
+            if (job.controller && typeof job.controller.abort === 'function') {
+                job.controller.abort();
+            }
+        }
+        this.ocrJobsByPage.clear();
+        this.backgroundOCRChain = Promise.resolve();
+    }
+
+    /**
+     * Release canvas memory by zeroing dimensions and clearing the context.
+     * Setting width/height to 0 forces the browser to deallocate the
+     * backing bitmap immediately, preventing GPU/CPU memory leaks.
+     * The canvas is then ready to be resized for a fresh render.
+     */
+    releaseCanvasMemory(canvas, ctx) {
+        if (!canvas) return;
+        if (ctx) {
+            try { ctx.clearRect(0, 0, canvas.width, canvas.height); } catch (_) { }
+        }
+        canvas.width = 0;
+        canvas.height = 0;
+    }
+
+    evictFarOCRPages(anchorPageNumber) {
+        if (!this.ocrCacheManager || typeof this.ocrCacheManager.evictFarPages !== 'function') return;
+        if (!Number.isInteger(anchorPageNumber) || anchorPageNumber < 1) return;
+
+        const pinnedPages = [anchorPageNumber];
+        if (this.isDoublePageMode && anchorPageNumber + 1 <= this.totalPages) {
+            pinnedPages.push(anchorPageNumber + 1);
+        }
+
+        this.ocrCacheManager.evictFarPages(anchorPageNumber, this.ocrCacheDistance, pinnedPages);
+
+        const pinned = new Set(pinnedPages);
+        Array.from(this.ocrJobsByPage.keys()).forEach((pageNumber) => {
+            if (pinned.has(pageNumber)) return;
+            if (Math.abs(pageNumber - anchorPageNumber) <= this.ocrCacheDistance) return;
+            this.cancelOCRForPage(pageNumber);
+        });
+    }
+
+    scheduleBackgroundOCRPreparation(anchorPageNumber = this.currentPage) {
+        if (!this.pdfDoc || !this.isOCREngineAvailable()) return;
+
+        const startPage = Math.max(1, anchorPageNumber);
+        const endPage = Math.min(this.totalPages, anchorPageNumber + this.ocrPreparationRange);
+        const pagesToPrepare = [];
+
+        for (let pageNumber = startPage; pageNumber <= endPage; pageNumber++) {
+            // Skip pages already cached or currently being prepared.
+            if (this.hasCachedOCR(pageNumber) || this.ocrJobsByPage.has(pageNumber)) {
+                continue;
+            }
+            pagesToPrepare.push(pageNumber);
+        }
+
+        if (pagesToPrepare.length === 0) {
+            return;
+        }
+
+        const runPreparation = () => {
+            pagesToPrepare.forEach((pageNumber) => {
+                this.prepareOCRPageInBackground(pageNumber);
+            });
+        };
+
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(() => runPreparation(), { timeout: 900 });
+            return;
+        }
+
+        setTimeout(runPreparation, 0);
+    }
+
+    prepareOCRPageInBackground(pageNumber) {
+        if (this.hasCachedOCR(pageNumber) || this.ocrJobsByPage.has(pageNumber)) {
+            return;
+        }
+
+        // Keep preparation work serialized so rasterization does not spike UI work.
+        this.backgroundOCRChain = this.backgroundOCRChain
+            .catch(() => undefined)
+            .then(() => this.ensureOCRForPage(null, pageNumber))
+            .catch((error) => {
+                console.warn(`Background OCR preparation failed for page ${pageNumber}:`, error);
+            });
     }
 
     async renderSinglePage() {
@@ -653,8 +1018,15 @@ class FixedEnhancedPDFReader {
         // Hide second page wrapper
         if (this.pageWrapper2) this.pageWrapper2.classList.add('hidden');
 
+        this.assignPageWrapperNumber(this.pageWrapper1, this.currentPage);
+        this.assignPageWrapperNumber(this.pageWrapper2, null);
+        this.updateOCRToggleButtons();
+
         // Show first page wrapper
         if (this.pageWrapper1) this.pageWrapper1.classList.remove('hidden');
+
+        // Release old canvas bitmap before allocating new one
+        this.releaseCanvasMemory(this.canvas1, this.ctx1);
 
         // Canvas dimensions match viewport exactly
         this.canvas1.width = viewport.width;
@@ -688,6 +1060,8 @@ class FixedEnhancedPDFReader {
 
         await page.render(renderContext).promise;
 
+        this.refreshPageVisibilityObserver();
+
         // Render native text layer or OCR overlay based on per-page text availability.
         await this.renderPageTextOverlay(
             page,
@@ -710,6 +1084,13 @@ class FixedEnhancedPDFReader {
 
         // Show first page wrapper
         if (this.pageWrapper1) this.pageWrapper1.classList.remove('hidden');
+
+        this.assignPageWrapperNumber(this.pageWrapper1, this.currentPage);
+        this.updateOCRToggleButtons();
+
+        // Release old canvas bitmaps before allocating new ones
+        this.releaseCanvasMemory(this.canvas1, this.ctx1);
+        this.releaseCanvasMemory(this.canvas2, this.ctx2);
 
         // Canvas dimensions match viewport exactly
         this.canvas1.width = viewport1.width;
@@ -749,6 +1130,9 @@ class FixedEnhancedPDFReader {
 
             // Show second page wrapper
             if (this.pageWrapper2) this.pageWrapper2.classList.remove('hidden');
+
+            this.assignPageWrapperNumber(this.pageWrapper2, this.currentPage + 1);
+            this.updateOCRToggleButtons();
 
             // Canvas dimensions match viewport exactly
             this.canvas2.width = viewport2.width;
@@ -790,9 +1174,13 @@ class FixedEnhancedPDFReader {
             );
         } else {
             if (this.pageWrapper2) this.pageWrapper2.classList.add('hidden');
+            this.assignPageWrapperNumber(this.pageWrapper2, null);
             this.clearTextLayer(this.textLayer2);
             this.clearOCRLayer(this.ocrLayer2);
+            this.updateOCRToggleButtons();
         }
+
+        this.refreshPageVisibilityObserver();
 
         await this.renderPageTextOverlay(
             page1,
@@ -807,11 +1195,8 @@ class FixedEnhancedPDFReader {
     previousPage() {
         if (this.currentPage <= 1) return;
 
-        if (this.isDoublePageMode) {
-            this.currentPage = Math.max(1, this.currentPage - 2);
-        } else {
-            this.currentPage--;
-        }
+        const step = this.isDoublePageMode ? 2 : 1;
+        this.currentPage = Math.max(1, this.currentPage - step);
 
         this.renderCurrentPage();
         this.updateUIState();
@@ -820,10 +1205,14 @@ class FixedEnhancedPDFReader {
     nextPage() {
         if (this.currentPage >= this.totalPages) return;
 
-        if (this.isDoublePageMode) {
-            this.currentPage = Math.min(this.totalPages, this.currentPage + 2);
+        const step = this.isDoublePageMode ? 2 : 1;
+        const nextVal = this.currentPage + step;
+
+        if (nextVal > this.totalPages) {
+            if (this.currentPage === this.totalPages) return;
+            this.currentPage = this.totalPages;
         } else {
-            this.currentPage++;
+            this.currentPage = nextVal;
         }
 
         this.renderCurrentPage();
@@ -887,6 +1276,16 @@ class FixedEnhancedPDFReader {
     }
 
     exitFullscreen() {
+        // Clear fullscreen-related timers immediately
+        if (this.fullscreenTimer) {
+            clearTimeout(this.fullscreenTimer);
+            this.fullscreenTimer = null;
+        }
+        if (this.mouseMoveTimer) {
+            clearTimeout(this.mouseMoveTimer);
+            this.mouseMoveTimer = null;
+        }
+
         if (document.fullscreenElement) {
             document.exitFullscreen().then(() => {
                 console.log('✅ Exited fullscreen mode');
@@ -928,7 +1327,7 @@ class FixedEnhancedPDFReader {
 
         const isAtStart = this.currentPage <= 1;
         const isAtEnd = this.isDoublePageMode ?
-            this.currentPage >= this.totalPages - 1 :
+            this.currentPage >= this.totalPages :
             this.currentPage >= this.totalPages;
 
         if (prevBtn) prevBtn.disabled = isAtStart;
@@ -938,6 +1337,7 @@ class FixedEnhancedPDFReader {
 
         // Update TOC active items
         this.updateTOCActiveItem();
+        this.updateOCRToggleButtons();
     }
 
     // All other methods from the original class remain the same
@@ -985,6 +1385,19 @@ class FixedEnhancedPDFReader {
         }
 
         try {
+            this.ocrSessionId += 1;
+
+            // Release old canvas memory before loading new document
+            this.releaseCanvasMemory(this.canvas1, this.ctx1);
+            this.releaseCanvasMemory(this.canvas2, this.ctx2);
+
+            // Release OCR measurement canvas
+            if (this.ocrMeasureCanvas) {
+                this.releaseCanvasMemory(this.ocrMeasureCanvas, this.ocrMeasureCtx);
+                this.ocrMeasureCanvas = null;
+                this.ocrMeasureCtx = null;
+            }
+
             this.showLoading('Loading PDF...');
             this.updateFileInfo(file.name, 'Loading...');
 
@@ -993,10 +1406,15 @@ class FixedEnhancedPDFReader {
             this.pdfDoc = await loadingTask.promise;
             this.totalPages = this.pdfDoc.numPages;
             this.currentPage = 1;
+            // Cancel all in-flight OCR before clearing state
+            this.cancelAllOCRJobs();
             this.ocrDataByPage.clear();
+            if (this.ocrCacheManager) {
+                this.ocrCacheManager.clear();
+            }
             this.pageTextSourceByPage.clear();
             this.pageTextStatsByPage.clear();
-            this.ocrJobsByPage.clear();
+            this.ocrViewEnabledByPage.clear();
 
             console.log('✅ PDF loaded successfully:', this.totalPages, 'pages');
             this.updateFileInfo(file.name, `${this.totalPages} pages loaded`);
@@ -1046,6 +1464,7 @@ class FixedEnhancedPDFReader {
 
         this.scale = zoomValue / 100;
         this.isFitWidthMode = false;
+        this.isFitHeightMode = false;
         this.renderCurrentPage();
         this.updateZoomDisplay();
         this.updateFitWidthButton();
@@ -1062,29 +1481,61 @@ class FixedEnhancedPDFReader {
         const containerWidth = container.clientWidth - 32;
         const page = await this.pdfDoc.getPage(this.currentPage);
         const viewport = page.getViewport({ scale: 1.0 });
-        this.scale = containerWidth / viewport.width;
+        const pageWidth = viewport.width;
+
+        if (this.isDoublePageMode && this.currentPage < this.totalPages) {
+            // In double mode, account for the wider of the two pages
+            const page2 = await this.pdfDoc.getPage(this.currentPage + 1);
+            const viewport2 = page2.getViewport({ scale: 1.0 });
+            const totalWidth = pageWidth + viewport2.width;
+            this.scale = containerWidth / totalWidth;
+        } else {
+            this.scale = containerWidth / pageWidth;
+        }
+
         this.isFitWidthMode = true;
+        this.isFitHeightMode = false;
         await this.renderCurrentPage();
         this.updateZoomDisplay();
         this.updateFitWidthButton();
     }
 
     async fitToHeight() {
-        if (!this.pdfDoc) return;
-        const container = document.querySelector('.pdf-container');
-        const containerHeight = container.clientHeight - 32;
-        const page = await this.pdfDoc.getPage(this.currentPage);
-        const viewport = page.getViewport({ scale: 1.0 });
-        this.scale = containerHeight / viewport.height;
-        this.isFitWidthMode = false;
-        await this.renderCurrentPage();
-        this.updateZoomDisplay();
-        this.updateFitWidthButton();
+        if (!this.pdfDoc || this._isFittingHeight) return;
+        this._isFittingHeight = true;
+        try {
+            // Use .reader-area (fixed-size scrollable parent) instead of .pdf-container
+            // because .pdf-container has min-height:100% and grows with content,
+            // which causes an infinite loop when measuring its clientHeight.
+            const readerArea = document.querySelector('.reader-area');
+            if (!readerArea) { this._isFittingHeight = false; return; }
+            const containerHeight = readerArea.clientHeight - 32;
+            const page = await this.pdfDoc.getPage(this.currentPage);
+            const viewport = page.getViewport({ scale: 1.0 });
+            let tallestHeight = viewport.height;
+
+            if (this.isDoublePageMode && this.currentPage < this.totalPages) {
+                // In double mode, fit the tallest of the two pages
+                const page2 = await this.pdfDoc.getPage(this.currentPage + 1);
+                const viewport2 = page2.getViewport({ scale: 1.0 });
+                tallestHeight = Math.max(viewport.height, viewport2.height);
+            }
+
+            this.scale = containerHeight / tallestHeight;
+            this.isFitWidthMode = false;
+            this.isFitHeightMode = true;
+            await this.renderCurrentPage();
+            this.updateZoomDisplay();
+            this.updateFitWidthButton();
+        } finally {
+            this._isFittingHeight = false;
+        }
     }
 
     zoomIn() {
         this.scale = Math.min(this.scale * 1.2, 5.0);
         this.isFitWidthMode = false;
+        this.isFitHeightMode = false;
         this.renderCurrentPage();
         this.updateZoomDisplay();
         this.updateFitWidthButton();
@@ -1093,6 +1544,7 @@ class FixedEnhancedPDFReader {
     zoomOut() {
         this.scale = Math.max(this.scale / 1.2, 0.1);
         this.isFitWidthMode = false;
+        this.isFitHeightMode = false;
         this.renderCurrentPage();
         this.updateZoomDisplay();
         this.updateFitWidthButton();
@@ -1126,7 +1578,8 @@ class FixedEnhancedPDFReader {
         attachTextLayerListeners(this.ocrLayer2 || document.getElementById('ocrLayer2'));
 
         this.initializeHighlightContextMenu();
-        document.addEventListener('click', () => this.hideContextMenu());
+        this._boundHandlers.clickHideContext = () => this.hideContextMenu();
+        document.addEventListener('click', this._boundHandlers.clickHideContext);
     }
 
     initializeHighlightContextMenu() {
@@ -1207,9 +1660,7 @@ class FixedEnhancedPDFReader {
         this.updateHighlightsList();
         this.saveHighlights();
 
-        window.getSelection().removeAllRanges();
-        this.selectedText = '';
-
+        // Keep selection intact so users can quickly apply multiple highlights
         console.log('Text highlighted:', highlight);
     }
 
@@ -1243,6 +1694,12 @@ class FixedEnhancedPDFReader {
         `).join('');
 
         highlightsContent.innerHTML = highlightsHTML;
+
+        // Scroll to the newest highlight (last item)
+        const lastItem = highlightsContent.lastElementChild;
+        if (lastItem) {
+            lastItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
     }
 
     goToHighlight(highlightId) {
@@ -1265,8 +1722,12 @@ class FixedEnhancedPDFReader {
 
     saveHighlights() {
         try {
-            localStorage.setItem('pdf-reader-highlights', JSON.stringify(this.highlights));
+            const data = JSON.stringify(this.highlights);
+            localStorage.setItem('pdf-reader-highlights', data);
         } catch (error) {
+            if (error?.name === 'QuotaExceededError') {
+                this.showError('Storage is full. Try clearing old highlights or notes.');
+            }
             console.warn('Could not save highlights:', error);
         }
     }
@@ -1351,8 +1812,12 @@ class FixedEnhancedPDFReader {
             localStorage.setItem('pdf-reader-notes', JSON.stringify(content));
             this.showSuccess('Notes saved successfully!');
         } catch (error) {
-            console.error('Error saving notes:', error);
-            this.showError('Could not save notes');
+            if (error?.name === 'QuotaExceededError') {
+                this.showError('Storage is full. Try clearing old highlights or notes.');
+            } else {
+                this.showError('Could not save notes');
+            }
+            console.warn('Could not save notes:', error);
         }
     }
 
@@ -1446,6 +1911,17 @@ class FixedEnhancedPDFReader {
                 resolvedDest = await this.pdfDoc.getDestination(dest);
             } else if (Array.isArray(dest)) {
                 resolvedDest = dest;
+            } else if (typeof dest === 'object' && dest !== null) {
+                // Handle destination objects with page property
+                if (typeof dest.pageNumber === 'number') return Math.max(1, Math.min(dest.pageNumber, this.totalPages));
+                if (typeof dest.page === 'number') return Math.max(1, Math.min(dest.page, this.totalPages));
+                // Try treating it as a page ref directly
+                try {
+                    const idx = await this.pdfDoc.getPageIndex(dest);
+                    return Math.max(1, Math.min(idx + 1, this.totalPages));
+                } catch (e) {
+                    return 1;
+                }
             } else {
                 return 1;
             }
@@ -1455,16 +1931,35 @@ class FixedEnhancedPDFReader {
             }
 
             const pageRef = resolvedDest[0];
-            if (!pageRef || typeof pageRef !== 'object') {
+            let pageNumber;
+
+            if (typeof pageRef === 'number') {
+                // Some destinations use a direct page index (0-based)
+                pageNumber = pageRef + 1;
+            } else if (pageRef && typeof pageRef === 'object') {
+                // Standard PDF ref object — resolve via getPageIndex
+                const pageIndex = await this.pdfDoc.getPageIndex(pageRef);
+                pageNumber = pageIndex + 1;
+            } else {
                 return 1;
             }
 
-            const pageIndex = await this.pdfDoc.getPageIndex(pageRef);
-            const pageNumber = pageIndex + 1;
-
+            // Validate resolved page number
             if (pageNumber < 1 || pageNumber > this.totalPages) {
                 return Math.max(1, Math.min(pageNumber, this.totalPages));
             }
+
+            // The remaining elements describe the view type:
+            // [pageRef, /XYZ, left, top, zoom]
+            // [pageRef, /Fit]
+            // [pageRef, /FitH, top]
+            // [pageRef, /FitV, left]
+            // [pageRef, /FitR, left, bottom, right, top]
+            // [pageRef, /FitB]
+            // [pageRef, /FitBH, top]
+            // [pageRef, /FitBV, left]
+            // We only need the page number for TOC navigation, so these
+            // are noted for completeness but the page is correctly resolved above.
 
             return pageNumber;
         } catch (error) {
@@ -1549,6 +2044,249 @@ class FixedEnhancedPDFReader {
         });
     }
 
+    createOCRCacheManager() {
+        if (typeof window !== 'undefined' && typeof window.OCRCacheManager === 'function') {
+            return new window.OCRCacheManager();
+        }
+
+        // Inline LRU cache fallback when external OCRCacheManager is not available
+        const fallbackCache = new Map();
+        const maxEntries = 40;
+        return {
+            getOCR(pageNumber) {
+                const value = fallbackCache.get(pageNumber);
+                if (value === undefined) return undefined;
+                // LRU refresh: delete and re-insert so it moves to end
+                fallbackCache.delete(pageNumber);
+                fallbackCache.set(pageNumber, value);
+                return value;
+            },
+            setOCR(pageNumber, data) {
+                if (fallbackCache.has(pageNumber)) fallbackCache.delete(pageNumber);
+                fallbackCache.set(pageNumber, data);
+                // Evict oldest entry if over limit
+                while (fallbackCache.size > maxEntries) {
+                    const lruKey = fallbackCache.keys().next().value;
+                    if (lruKey === undefined) break;
+                    fallbackCache.delete(lruKey);
+                }
+            },
+            hasOCR(pageNumber) {
+                return fallbackCache.has(pageNumber);
+            },
+            evictFarPages(currentPage, keepDistance, pinnedPages = []) {
+                const pinned = new Set(pinnedPages);
+                for (const [page] of fallbackCache) {
+                    if (pinned.has(page)) continue;
+                    if (Math.abs(page - currentPage) <= keepDistance) continue;
+                    fallbackCache.delete(page);
+                }
+            },
+            clear() {
+                fallbackCache.clear();
+            }
+        };
+    }
+
+    createOCRWorkerManager() {
+        // Prefer externally provided OCRWorkerManager (e.g. from Next.js TypeScript module)
+        if (typeof window !== 'undefined' && typeof window.OCRWorkerManager === 'function') {
+            try {
+                return window.OCRWorkerManager.fromScript('/ocr-worker.js', {
+                    maxConcurrent: this.ocrMaxConcurrent
+                });
+            } catch (error) {
+                console.warn('Could not initialize external OCR worker manager:', error);
+            }
+        }
+
+        // Inline fallback OCRWorkerManager when external class is not available
+        if (typeof Worker === 'undefined') {
+            console.warn('Web Worker API not available — OCR disabled.');
+            return null;
+        }
+
+        const maxConcurrent = Math.max(1, Math.floor(this.ocrMaxConcurrent || 1));
+        let worker = null;
+        let requestSeq = 0;
+        const pendingRequests = new Map();
+        const requestQueue = [];
+        const abortHandlers = new Map();
+        const canceledRequests = new Set();
+        let activeCount = 0;
+
+        function ensureWorker() {
+            if (worker) return worker;
+            worker = new Worker('/ocr-worker.js');
+            worker.addEventListener('message', onMessage);
+            worker.addEventListener('error', onError);
+            return worker;
+        }
+
+        function onMessage(event) {
+            const data = event?.data;
+            if (!data || typeof data !== 'object') return;
+
+            if (data.type === 'ocr:result' && typeof data.requestId === 'string') {
+                const pending = pendingRequests.get(data.requestId);
+                if (!pending) return;
+                pendingRequests.delete(data.requestId);
+                cleanupAbort(data.requestId);
+                activeCount = Math.max(0, activeCount - 1);
+                if (canceledRequests.has(data.requestId)) {
+                    canceledRequests.delete(data.requestId);
+                    processQueue();
+                    return;
+                }
+                pending.resolve(data.payload);
+                processQueue();
+            } else if (data.type === 'ocr:error' && typeof data.requestId === 'string') {
+                const pending = pendingRequests.get(data.requestId);
+                if (!pending) return;
+                pendingRequests.delete(data.requestId);
+                cleanupAbort(data.requestId);
+                activeCount = Math.max(0, activeCount - 1);
+                if (canceledRequests.has(data.requestId)) {
+                    canceledRequests.delete(data.requestId);
+                    processQueue();
+                    return;
+                }
+                pending.reject(new Error(data.error || 'Unknown OCR worker error.'));
+                processQueue();
+            }
+        }
+
+        function onError() {
+            rejectAll(new Error('OCR worker failed.'));
+        }
+
+        function rejectAll(error) {
+            const allPending = Array.from(pendingRequests.values());
+            const allQueued = Array.from(requestQueue);
+            pendingRequests.clear();
+            requestQueue.length = 0;
+            activeCount = 0;
+            canceledRequests.clear();
+            allPending.forEach(({ reject }) => reject(error));
+            allQueued.forEach(({ reject }) => reject(error));
+            abortHandlers.forEach(({ signal, handler }) => signal.removeEventListener('abort', handler));
+            abortHandlers.clear();
+        }
+
+        function cleanupAbort(requestId) {
+            const entry = abortHandlers.get(requestId);
+            if (!entry) return;
+            entry.signal.removeEventListener('abort', entry.handler);
+            abortHandlers.delete(requestId);
+        }
+
+        function processQueue() {
+            if (activeCount >= maxConcurrent) return;
+            while (activeCount < maxConcurrent && requestQueue.length > 0) {
+                const next = requestQueue.shift();
+                if (!next) break;
+                if (canceledRequests.has(next.requestId)) {
+                    canceledRequests.delete(next.requestId);
+                    cleanupAbort(next.requestId);
+                    continue;
+                }
+                const w = ensureWorker();
+                pendingRequests.set(next.requestId, { resolve: next.resolve, reject: next.reject });
+                activeCount += 1;
+                try {
+                    w.postMessage({
+                        type: 'ocr:run',
+                        requestId: next.requestId,
+                        payload: next.input
+                    }, next.transfer || []);
+                } catch (err) {
+                    pendingRequests.delete(next.requestId);
+                    cleanupAbort(next.requestId);
+                    activeCount = Math.max(0, activeCount - 1);
+                    next.reject(err);
+                }
+            }
+        }
+
+        function cancelRequest(requestId) {
+            if (!requestId) return false;
+            const qIdx = requestQueue.findIndex(r => r.requestId === requestId);
+            if (qIdx !== -1) {
+                const [queued] = requestQueue.splice(qIdx, 1);
+                cleanupAbort(requestId);
+                queued.reject(new Error('OCR request canceled.'));
+                return true;
+            }
+            const pending = pendingRequests.get(requestId);
+            if (!pending) return false;
+            pendingRequests.delete(requestId);
+            canceledRequests.add(requestId);
+            cleanupAbort(requestId);
+            pending.reject(new Error('OCR request canceled.'));
+            activeCount = Math.max(0, activeCount - 1);
+            processQueue();
+            return true;
+        }
+
+        return {
+            runOCR(input, options = {}) {
+                const pageNumber = input.pageNumber;
+                if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+                    return Promise.reject(new RangeError(`Invalid page number: ${pageNumber}`));
+                }
+                requestSeq += 1;
+                const requestId = `ocr-${pageNumber}-${requestSeq}`;
+                const signal = options.signal;
+
+                return new Promise((resolve, reject) => {
+                    if (signal?.aborted) {
+                        reject(new Error('OCR request canceled.'));
+                        return;
+                    }
+                    const request = {
+                        requestId,
+                        input,
+                        resolve,
+                        reject,
+                        signal,
+                        transfer: options.transfer
+                    };
+                    if (signal) {
+                        const handler = () => cancelRequest(requestId);
+                        signal.addEventListener('abort', handler, { once: true });
+                        abortHandlers.set(requestId, { signal, handler });
+                    }
+                    requestQueue.push(request);
+                    processQueue();
+                });
+            },
+            cancelRequest,
+            terminate() {
+                if (!worker) return;
+                worker.removeEventListener('message', onMessage);
+                worker.removeEventListener('error', onError);
+                worker.terminate();
+                worker = null;
+                rejectAll(new Error('OCR worker was terminated.'));
+            }
+        };
+    }
+
+    hasCachedOCR(pageNumber) {
+        return (
+            (this.ocrCacheManager && this.ocrCacheManager.hasOCR(pageNumber)) ||
+            this.ocrDataByPage.has(pageNumber)
+        );
+    }
+
+    getCachedOCR(pageNumber) {
+        if (this.ocrCacheManager) {
+            const cached = this.ocrCacheManager.getOCR(pageNumber);
+            if (cached) return cached;
+        }
+        return this.ocrDataByPage.get(pageNumber);
+    }
+
     clearTextLayer(textLayerElement = null) {
         const textLayer = textLayerElement || document.getElementById('textLayer');
         if (!textLayer) return;
@@ -1566,21 +2304,29 @@ class FixedEnhancedPDFReader {
         const source = await this.resolvePageTextSource(page, pageNumber);
         const textLayer = textLayerElement || document.getElementById('textLayer');
         const ocrLayer = ocrLayerElement || document.getElementById('ocrLayer');
+        const shouldShowOCR = this.ocrViewEnabledByPage.get(pageNumber) === true && this.hasCachedOCR(pageNumber);
 
-        if (source === 'native') {
-            if (textLayer) textLayer.style.pointerEvents = 'auto';
-            if (ocrLayer) ocrLayer.style.pointerEvents = 'none';
-            this.clearOCRLayer(ocrLayer);
-            await this.renderTextLayer(page, viewport, textLayer);
-        } else if (source === 'ocr') {
+        if (shouldShowOCR) {
             if (textLayer) textLayer.style.pointerEvents = 'none';
             if (ocrLayer) ocrLayer.style.pointerEvents = 'auto';
             this.clearTextLayer(textLayer);
             await this.renderOCRLayer(page, viewport, ocrLayer, pageNumber);
+            return 'ocr';
+        }
+
+        if (source === 'native') {
+            if (textLayer) textLayer.style.pointerEvents = 'auto';
+            if (ocrLayer) ocrLayer.style.pointerEvents = 'none';
+            await this.renderTextLayer(page, viewport, textLayer);
         } else {
             if (textLayer) textLayer.style.pointerEvents = 'none';
             if (ocrLayer) ocrLayer.style.pointerEvents = 'none';
             this.clearTextLayer(textLayer);
+        }
+
+        if (this.ocrDebugMode && this.hasCachedOCR(pageNumber)) {
+            await this.renderOCRLayer(page, viewport, ocrLayer, pageNumber);
+        } else {
             this.clearOCRLayer(ocrLayer);
         }
 
@@ -1593,8 +2339,13 @@ class FixedEnhancedPDFReader {
     }
 
     async resolvePageTextSource(page, pageNumber) {
-        if (this.pageTextSourceByPage.has(pageNumber)) {
-            return this.pageTextSourceByPage.get(pageNumber);
+        const cachedSource = this.pageTextSourceByPage.get(pageNumber);
+        if (cachedSource === 'native' || cachedSource === 'none') {
+            return cachedSource;
+        }
+        if (cachedSource === 'ocr') {
+            // OCR overlays are intentionally disabled; keep result as silent preparation only.
+            return 'none';
         }
 
         const nativeStats = await this.getNativeTextStats(page);
@@ -1605,16 +2356,7 @@ class FixedEnhancedPDFReader {
             return 'native';
         }
 
-        const hasOCR = await this.ensureOCRForPage(page, pageNumber);
-        if (hasOCR) {
-            this.pageTextSourceByPage.set(pageNumber, 'ocr');
-            return 'ocr';
-        }
-
-        // Cache "none" only if an OCR engine is available but produced no usable output.
-        if (this.isOCREngineAvailable()) {
-            this.pageTextSourceByPage.set(pageNumber, 'none');
-        }
+        this.pageTextSourceByPage.set(pageNumber, 'none');
         return 'none';
     }
 
@@ -1639,7 +2381,12 @@ class FixedEnhancedPDFReader {
     }
 
     async ensureOCRForPage(page, pageNumber) {
-        if (this.ocrDataByPage.has(pageNumber)) {
+        const normalizedPageNumber = Number(pageNumber);
+        if (!Number.isInteger(normalizedPageNumber) || normalizedPageNumber < 1) {
+            return false;
+        }
+
+        if (this.hasCachedOCR(normalizedPageNumber)) {
             return true;
         }
 
@@ -1647,41 +2394,68 @@ class FixedEnhancedPDFReader {
             return false;
         }
 
-        if (this.ocrJobsByPage.has(pageNumber)) {
-            return this.ocrJobsByPage.get(pageNumber);
+        if (!page && !this.pdfDoc) {
+            return false;
         }
 
-        const job = this.performOCRForPage(page, pageNumber)
+        if (this.ocrJobsByPage.has(normalizedPageNumber)) {
+            const existing = this.ocrJobsByPage.get(normalizedPageNumber);
+            return existing?.promise || false;
+        }
+
+        const sessionId = this.ocrSessionId;
+        const controller = new AbortController();
+        const job = (async () => {
+            // Pre-flight session check — bail early if document changed
+            if (sessionId !== this.ocrSessionId) return null;
+            const targetPage = page || await this.pdfDoc.getPage(normalizedPageNumber);
+            // Re-check after async getPage
+            if (sessionId !== this.ocrSessionId) return null;
+            return this.performOCRForPage(targetPage, normalizedPageNumber, controller.signal);
+        })()
             .then((ocrPageData) => {
+                if (sessionId !== this.ocrSessionId) {
+                    return false;
+                }
                 if (!ocrPageData) return false;
-                return this.setOCRPageData(pageNumber, ocrPageData, false);
+                return this.setOCRPageData(normalizedPageNumber, ocrPageData, false);
             })
             .catch((error) => {
-                console.error(`OCR fallback failed on page ${pageNumber}:`, error);
+                console.error(`OCR preparation failed on page ${normalizedPageNumber}:`, error);
                 return false;
             })
             .finally(() => {
-                this.ocrJobsByPage.delete(pageNumber);
+                this.ocrJobsByPage.delete(normalizedPageNumber);
+                this.updateOCRToggleButtons();
             });
 
-        this.ocrJobsByPage.set(pageNumber, job);
+        this.ocrJobsByPage.set(normalizedPageNumber, { promise: job, controller });
+        this.updateOCRToggleButtons();
         return job;
     }
 
     isOCREngineAvailable() {
-        return typeof window !== 'undefined' && (
-            typeof window.performOCR === 'function' ||
-            (window.Tesseract && typeof window.Tesseract.recognize === 'function')
-        );
+        return !!(this.ocrWorkerManager && typeof this.ocrWorkerManager.runOCR === 'function');
     }
 
-    async performOCRForPage(page, pageNumber) {
+    async performOCRForPage(page, pageNumber, abortSignal) {
+        if (!this.ocrWorkerManager) {
+            return null;
+        }
+
+        if (abortSignal?.aborted) {
+            return null;
+        }
+
         const ocrViewport = page.getViewport({ scale: this.ocrRenderScale });
         const ocrCanvas = document.createElement('canvas');
         ocrCanvas.width = Math.max(1, Math.ceil(ocrViewport.width));
         ocrCanvas.height = Math.max(1, Math.ceil(ocrViewport.height));
 
-        const ocrContext = ocrCanvas.getContext('2d', { alpha: false });
+        const imageWidth = ocrCanvas.width;
+        const imageHeight = ocrCanvas.height;
+
+        const ocrContext = ocrCanvas.getContext('2d', { alpha: false, desynchronized: true });
         if (!ocrContext) {
             console.warn('Could not create OCR canvas context');
             return null;
@@ -1692,8 +2466,30 @@ class FixedEnhancedPDFReader {
             viewport: ocrViewport
         }).promise;
 
+        ocrContext.filter = 'grayscale(100%) contrast(120%)';
+        ocrContext.drawImage(ocrCanvas, 0, 0);
+        ocrContext.filter = 'none';
+
+        if (abortSignal?.aborted) {
+            return null;
+        }
+
+        // Convert canvas to PNG data URL — Tesseract.recognize() accepts encoded
+        // images (PNG/JPEG) but NOT raw RGBA pixel buffers.
         const imageDataUrl = ocrCanvas.toDataURL('image/png');
-        const rawOCR = await this.callOCREngine(imageDataUrl, pageNumber);
+
+        // Release the temporary OCR canvas immediately after extracting image
+        ocrCanvas.width = 0;
+        ocrCanvas.height = 0;
+
+        const rawOCR = await this.ocrWorkerManager.runOCR({
+            pageNumber,
+            imageDataUrl,
+            width: imageWidth,
+            height: imageHeight
+        }, {
+            signal: abortSignal
+        });
         if (!rawOCR) {
             return null;
         }
@@ -1701,8 +2497,8 @@ class FixedEnhancedPDFReader {
         const ocrPayload = typeof rawOCR === 'object' ? rawOCR : { words: [] };
         const normalizedOCR = this.normalizeOCRPageData({
             ...ocrPayload,
-            imageWidth: ocrCanvas.width,
-            imageHeight: ocrCanvas.height,
+            imageWidth,
+            imageHeight,
             dpi: 72 * this.ocrRenderScale
         });
 
@@ -1770,12 +2566,23 @@ class FixedEnhancedPDFReader {
             return false;
         }
 
-        this.ocrDataByPage.set(normalizedPageNumber, normalized);
-        const existingSource = this.pageTextSourceByPage.get(normalizedPageNumber);
-        if (existingSource === 'none' || existingSource === 'ocr') {
-            this.pageTextSourceByPage.set(normalizedPageNumber, 'ocr');
+        const structured = this.toStructuredOCRPageData(
+            normalizedPageNumber,
+            normalized,
+            pageData?.text ?? pageData?.fullText
+        );
+
+        this.ocrDataByPage.set(normalizedPageNumber, structured);
+        if (this.ocrCacheManager) {
+            this.ocrCacheManager.setOCR(normalizedPageNumber, structured);
         }
-        console.log(`✅ OCR data stored for page ${normalizedPageNumber}: ${normalized.words.length} words`);
+
+        const existingSource = this.pageTextSourceByPage.get(normalizedPageNumber) || 'none';
+        if (existingSource !== 'native') {
+            // Keep OCR data silent for now; overlays are not displayed yet.
+            this.pageTextSourceByPage.set(normalizedPageNumber, 'none');
+        }
+        console.log(`✅ OCR data stored for page ${normalizedPageNumber}: ${structured.words.length} words`);
 
         const isCurrentPage = normalizedPageNumber === this.currentPage;
         const isCurrentSecondPage = this.isDoublePageMode && normalizedPageNumber === this.currentPage + 1;
@@ -1783,6 +2590,7 @@ class FixedEnhancedPDFReader {
             this.renderCurrentPage();
         }
 
+        this.updateOCRToggleButtons();
         return true;
     }
 
@@ -1792,8 +2600,13 @@ class FixedEnhancedPDFReader {
             return 0;
         }
 
+        // Cancel all in-flight OCR before replacing data
+        this.cancelAllOCRJobs();
         this.ocrDataByPage.clear();
-        this.ocrJobsByPage.clear();
+        if (this.ocrCacheManager) {
+            this.ocrCacheManager.clear();
+        }
+        this.ocrViewEnabledByPage.clear();
         Array.from(this.pageTextSourceByPage.entries()).forEach(([pageNumber, source]) => {
             if (source !== 'native') {
                 this.pageTextSourceByPage.delete(pageNumber);
@@ -1842,52 +2655,140 @@ class FixedEnhancedPDFReader {
             return null;
         }
 
-        const words = this.extractOCRWordCandidates(pageData)
-            .map((word) => this.normalizeOCRWord(word))
-            .filter(Boolean);
+        try {
+            let candidates;
+            try {
+                candidates = this.extractOCRWordCandidates(pageData);
+            } catch (extractErr) {
+                console.warn('Failed to extract OCR word candidates:', extractErr);
+                return null;
+            }
 
-        if (words.length === 0) {
+            if (!Array.isArray(candidates)) {
+                return null;
+            }
+
+            const words = [];
+            for (const candidate of candidates) {
+                try {
+                    const normalized = this.normalizeOCRWord(candidate);
+                    if (normalized) {
+                        words.push(normalized);
+                    }
+                } catch (wordErr) {
+                    // Skip malformed individual words without crashing
+                    console.warn('Skipping malformed OCR word:', wordErr);
+                }
+            }
+
+            if (words.length === 0) {
+                return null;
+            }
+
+            const imageMeta = pageData.image && typeof pageData.image === 'object' ? pageData.image : {};
+            const resolvedDpi = this.toFiniteNumber(
+                pageData.dpi ??
+                pageData.sourceDpi ??
+                imageMeta.dpi ??
+                imageMeta.resolution
+            ) || this.defaultOCRDpi;
+
+            const result = {
+                words,
+                imageWidth: this.toFiniteNumber(
+                    pageData.imageWidth ??
+                    pageData.width ??
+                    imageMeta.width ??
+                    imageMeta.w
+                ),
+                imageHeight: this.toFiniteNumber(
+                    pageData.imageHeight ??
+                    pageData.height ??
+                    imageMeta.height ??
+                    imageMeta.h
+                ),
+                dpi: resolvedDpi
+            };
+
+            // Validate final structure has sane values
+            if (!Array.isArray(result.words) || result.words.length === 0) {
+                return null;
+            }
+            if (typeof result.dpi !== 'number' || !isFinite(result.dpi) || result.dpi <= 0) {
+                result.dpi = this.defaultOCRDpi;
+            }
+
+            return result;
+        } catch (err) {
+            console.warn('normalizeOCRPageData failed on unexpected data structure:', err);
             return null;
         }
+    }
 
-        const imageMeta = pageData.image && typeof pageData.image === 'object' ? pageData.image : {};
-        const resolvedDpi = this.toFiniteNumber(
-            pageData.dpi ??
-            pageData.sourceDpi ??
-            imageMeta.dpi ??
-            imageMeta.resolution
-        ) || this.defaultOCRDpi;
+    toStructuredOCRPageData(pageNumber, normalized, rawText) {
+        if (!normalized || typeof normalized !== 'object') {
+            return { pageNumber, text: undefined, words: [], imageWidth: null, imageHeight: null, dpi: this.defaultOCRDpi };
+        }
 
-        return {
+        const text = typeof rawText === 'string' ? rawText.trim() : undefined;
+        const words = Array.isArray(normalized.words)
+            ? normalized.words.map((word) => {
+                try {
+                    const bbox = word && word.bbox ? word.bbox : {};
+                    return {
+                        text: `${word?.text ?? ''}`,
+                        bbox: {
+                            left: Number(bbox.left) || 0,
+                            top: Number(bbox.top) || 0,
+                            width: Number(bbox.width) || 0,
+                            height: Number(bbox.height) || 0
+                        },
+                        confidence: this.toFiniteNumber(word?.confidence)
+                    };
+                } catch (e) {
+                    return null;
+                }
+            }).filter(Boolean)
+            : [];
+
+        const structured = {
+            pageNumber,
+            text,
             words,
-            imageWidth: this.toFiniteNumber(
-                pageData.imageWidth ??
-                pageData.width ??
-                imageMeta.width ??
-                imageMeta.w
-            ),
-            imageHeight: this.toFiniteNumber(
-                pageData.imageHeight ??
-                pageData.height ??
-                imageMeta.height ??
-                imageMeta.h
-            ),
-            dpi: resolvedDpi
+            imageWidth: this.toFiniteNumber(normalized.imageWidth),
+            imageHeight: this.toFiniteNumber(normalized.imageHeight),
+            dpi: this.toFiniteNumber(normalized.dpi) || this.defaultOCRDpi
         };
+
+        return this.cloneStructuredData(structured);
+    }
+
+    cloneStructuredData(data) {
+        if (typeof structuredClone === 'function') {
+            return structuredClone(data);
+        }
+        return JSON.parse(JSON.stringify(data));
     }
 
     extractOCRWordCandidates(pageData) {
         const candidates = [];
+        const visited = new WeakSet();
 
-        const collect = (node) => {
-            if (!node) return;
-
-            if (Array.isArray(node)) {
-                node.forEach(collect);
-                return;
-            }
+        const collect = (node, depth) => {
+            if (!node || depth > 10) return;
 
             if (typeof node !== 'object') return;
+
+            // Guard against circular references
+            if (visited.has(node)) return;
+            visited.add(node);
+
+            if (Array.isArray(node)) {
+                for (let i = 0; i < node.length; i++) {
+                    collect(node[i], depth + 1);
+                }
+                return;
+            }
 
             const hasText = typeof node.text === 'string' || typeof node.str === 'string' || typeof node.value === 'string';
             if (hasText) {
@@ -1896,14 +2797,14 @@ class FixedEnhancedPDFReader {
 
             ['data', 'words', 'tokens', 'items', 'lines', 'blocks', 'paragraphs', 'symbols'].forEach((key) => {
                 if (Array.isArray(node[key])) {
-                    collect(node[key]);
+                    collect(node[key], depth + 1);
                 } else if (node[key] && typeof node[key] === 'object') {
-                    collect(node[key]);
+                    collect(node[key], depth + 1);
                 }
             });
         };
 
-        collect(pageData.words || pageData.tokens || pageData.items || pageData.lines || pageData.blocks || pageData);
+        collect(pageData.words || pageData.tokens || pageData.items || pageData.lines || pageData.blocks || pageData, 0);
 
         // Deduplicate by object identity and text+bbox signature.
         const unique = [];
@@ -2053,79 +2954,71 @@ class FixedEnhancedPDFReader {
         return { width, height, dpi };
     }
 
-    applyMatrixTransform(point, matrix) {
-        const x = point[0];
-        const y = point[1];
-        return [
-            matrix[0] * x + matrix[2] * y + matrix[4],
-            matrix[1] * x + matrix[3] * y + matrix[5]
-        ];
-    }
-
     mapOCRBoxToViewport(ocrBBox, ocrImageSize, page, viewport) {
         const view = page?.view || [0, 0, 1, 1];
-        const pageWidth = Math.max(1, view[2] - view[0]);
-        const pageHeight = Math.max(1, view[3] - view[1]);
-        const imageWidth = Math.max(1, ocrImageSize.width);
-        const imageHeight = Math.max(1, ocrImageSize.height);
-        const scaleX = viewport.width / imageWidth;
-        const scaleY = viewport.height / imageHeight;
+        const pageWidthPts = Math.max(1, view[2] - view[0]);
+        const pageHeightPts = Math.max(1, view[3] - view[1]);
 
-        // Normalize from OCR image coordinates (top-left origin) into PDF page coordinates.
-        const clamp01 = (value) => Math.min(1, Math.max(0, value));
-        const leftRatio = clamp01(ocrBBox.left / imageWidth);
-        const rightRatio = clamp01((ocrBBox.left + ocrBBox.width) / imageWidth);
-        const topRatio = clamp01(ocrBBox.top / imageHeight);
-        const bottomRatio = clamp01((ocrBBox.top + ocrBBox.height) / imageHeight);
+        const imageWidthPx = Math.max(1, ocrImageSize.width);
+        const imageHeightPx = Math.max(1, ocrImageSize.height);
+        const ocrDpi = Math.max(1, this.toFiniteNumber(ocrImageSize.dpi) || this.defaultOCRDpi);
 
-        // PDF.js uses bottom-left page coordinates, so invert Y here.
-        const pdfLeft = view[0] + leftRatio * pageWidth;
-        const pdfRight = view[0] + rightRatio * pageWidth;
-        const pdfTop = view[1] + (1 - topRatio) * pageHeight;
-        const pdfBottom = view[1] + (1 - bottomRatio) * pageHeight;
+        // DPI normalization: convert OCR pixel space to physical page points.
+        const pointsPerPixelX = 72 / ocrDpi;
+        const pointsPerPixelY = 72 / ocrDpi;
 
-        // Apply full viewport matrix so zoom/rotation/translation are all respected.
-        const matrix = viewport.transform;
-        const bottomLeft = this.applyMatrixTransform([pdfLeft, pdfBottom], matrix);
-        const bottomRight = this.applyMatrixTransform([pdfRight, pdfBottom], matrix);
-        const topLeft = this.applyMatrixTransform([pdfLeft, pdfTop], matrix);
-        const topRight = this.applyMatrixTransform([pdfRight, pdfTop], matrix);
+        const dpiImageWidthPts = imageWidthPx * pointsPerPixelX;
+        const dpiImageHeightPts = imageHeightPx * pointsPerPixelY;
+        const dpiNormX = pageWidthPts / Math.max(1, dpiImageWidthPts);
+        const dpiNormY = pageHeightPts / Math.max(1, dpiImageHeightPts);
 
-        const xs = [bottomLeft[0], bottomRight[0], topLeft[0], topRight[0]];
-        const ys = [bottomLeft[1], bottomRight[1], topLeft[1], topRight[1]];
+        const leftPts = ocrBBox.left * pointsPerPixelX * dpiNormX;
+        const topPts = ocrBBox.top * pointsPerPixelY * dpiNormY;
+        const widthPts = Math.max(0, ocrBBox.width * pointsPerPixelX * dpiNormX);
+        const heightPts = Math.max(0, ocrBBox.height * pointsPerPixelY * dpiNormY);
 
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
+        const viewportScaleX = viewport.width / pageWidthPts;
+        const viewportScaleY = viewport.height / pageHeightPts;
 
-        const baselineVectorX = bottomRight[0] - bottomLeft[0];
-        const baselineVectorY = bottomRight[1] - bottomLeft[1];
-        const baselineLength = Math.max(1, Math.hypot(baselineVectorX, baselineVectorY));
+        const mappedX = leftPts * viewportScaleX;
+        const mappedWidth = widthPts * viewportScaleX;
+        const mappedHeight = heightPts * viewportScaleY;
 
-        // Height from the area formula keeps baseline anchoring stable for rotated pages.
-        const sideVectorX = topLeft[0] - bottomLeft[0];
-        const sideVectorY = topLeft[1] - bottomLeft[1];
-        const heightFromCross = Math.abs(
-            baselineVectorX * sideVectorY - baselineVectorY * sideVectorX
-        ) / baselineLength;
+        // Y-axis inversion: OCR top-left origin -> PDF viewport top-left overlay space.
+        const mappedTop = viewport.height - ((topPts + heightPts) * viewportScaleY);
+        const baselineY = mappedTop + mappedHeight;
 
-        const fontSize = Math.max(1, heightFromCross || (maxY - minY));
-        const rotationDeg = (Math.atan2(baselineVectorY, baselineVectorX) * 180) / Math.PI;
+        // Baseline placement + required font-size estimate.
+        const fontSize = Math.max(1, mappedHeight * 0.8);
 
         return {
-            x: minX,
-            y: minY,
-            width: Math.max(1, maxX - minX),
-            height: Math.max(1, maxY - minY),
+            x: mappedX,
+            y: mappedTop,
+            width: Math.max(1, mappedWidth),
+            height: Math.max(1, mappedHeight),
+            baselineY,
             fontSize,
-            rotationDeg,
-            baselineLength,
-            baselineStart: bottomLeft,
-            baselineEnd: bottomRight,
-            scaleX,
-            scaleY
+            mapScaleX: viewportScaleX,
+            mapScaleY: viewportScaleY
         };
+    }
+
+    measureOCRTextWidth(text, fontSize) {
+        const normalizedText = `${text || ''}`.trim();
+        if (!normalizedText) return 0;
+
+        if (!this.ocrMeasureCtx) {
+            this.ocrMeasureCanvas = document.createElement('canvas');
+            this.ocrMeasureCtx = this.ocrMeasureCanvas.getContext('2d');
+        }
+
+        if (!this.ocrMeasureCtx) {
+            return Math.max(1, normalizedText.length * fontSize * 0.5);
+        }
+
+        this.ocrMeasureCtx.font = `${fontSize}px sans-serif`;
+        const measured = this.ocrMeasureCtx.measureText(normalizedText).width;
+        return Math.max(1, measured);
     }
 
     async renderOCRLayer(page, viewport, ocrLayerElement = null, pageNumber = this.currentPage) {
@@ -2134,7 +3027,7 @@ class FixedEnhancedPDFReader {
 
         ocrLayer.innerHTML = '';
 
-        const ocrPageData = this.ocrDataByPage.get(pageNumber);
+        const ocrPageData = this.getCachedOCR(pageNumber);
         if (!ocrPageData || !Array.isArray(ocrPageData.words) || ocrPageData.words.length === 0) {
             ocrLayer.classList.remove('debug');
             return;
@@ -2158,6 +3051,8 @@ class FixedEnhancedPDFReader {
             if (!mapped || !word.text) continue;
 
             renderedCount++;
+            const measuredTextWidth = this.measureOCRTextWidth(word.text, mapped.fontSize);
+            const textScaleX = Math.max(0.05, mapped.width / Math.max(1, measuredTextWidth));
 
             if (this.ocrDebugMode) {
                 const rect = document.createElementNS(svgNs, 'rect');
@@ -2170,49 +3065,51 @@ class FixedEnhancedPDFReader {
 
                 const baseline = document.createElementNS(svgNs, 'line');
                 baseline.setAttribute('class', 'ocr-baseline');
-                baseline.setAttribute('x1', `${mapped.baselineStart[0]}`);
-                baseline.setAttribute('y1', `${mapped.baselineStart[1]}`);
-                baseline.setAttribute('x2', `${mapped.baselineEnd[0]}`);
-                baseline.setAttribute('y2', `${mapped.baselineEnd[1]}`);
+                baseline.setAttribute('x1', `${mapped.x}`);
+                baseline.setAttribute('y1', `${mapped.baselineY}`);
+                baseline.setAttribute('x2', `${mapped.x + mapped.width}`);
+                baseline.setAttribute('y2', `${mapped.baselineY}`);
                 svg.appendChild(baseline);
             }
 
+            const textGroup = document.createElementNS(svgNs, 'g');
+            textGroup.setAttribute(
+                'transform',
+                `translate(${mapped.x} ${mapped.baselineY}) scale(${textScaleX} 1)`
+            );
+
             const textNode = document.createElementNS(svgNs, 'text');
             textNode.setAttribute('class', 'ocr-word');
-            textNode.setAttribute('x', `${mapped.baselineStart[0]}`);
-            textNode.setAttribute('y', `${mapped.baselineStart[1]}`);
+            textNode.setAttribute('x', '0');
+            textNode.setAttribute('y', '0');
             textNode.setAttribute('font-size', `${mapped.fontSize}`);
-            textNode.setAttribute('textLength', `${mapped.baselineLength}`);
-            textNode.setAttribute('lengthAdjust', 'spacingAndGlyphs');
+            textNode.setAttribute('font-family', 'sans-serif');
+            textNode.setAttribute('dominant-baseline', 'alphabetic');
             textNode.setAttribute('xml:space', 'preserve');
             textNode.textContent = word.text;
-
-            if (Math.abs(mapped.rotationDeg) > 0.001) {
-                textNode.setAttribute(
-                    'transform',
-                    `rotate(${mapped.rotationDeg} ${mapped.baselineStart[0]} ${mapped.baselineStart[1]})`
-                );
-            }
-
-            svg.appendChild(textNode);
+            textGroup.appendChild(textNode);
+            svg.appendChild(textGroup);
 
             if (this.ocrDebugMode && debugRows.length < 12) {
-                const formulaMappedX = word.bbox.left * mapped.scaleX;
-                const formulaMappedY = viewport.height - ((word.bbox.top + word.bbox.height) * mapped.scaleY);
+                const formulaMappedX = word.bbox.left * mapped.mapScaleX;
+                const formulaMappedY = viewport.height - ((word.bbox.top + word.bbox.height) * mapped.mapScaleY);
                 debugRows.push({
                     text: word.text,
                     ocrLeft: Number(word.bbox.left.toFixed(2)),
                     ocrTop: Number(word.bbox.top.toFixed(2)),
                     ocrWidth: Number(word.bbox.width.toFixed(2)),
                     ocrHeight: Number(word.bbox.height.toFixed(2)),
-                    scaleX: Number(mapped.scaleX.toFixed(4)),
-                    scaleY: Number(mapped.scaleY.toFixed(4)),
+                    mapScaleX: Number(mapped.mapScaleX.toFixed(4)),
+                    mapScaleY: Number(mapped.mapScaleY.toFixed(4)),
                     formulaX: Number(formulaMappedX.toFixed(2)),
                     formulaY: Number(formulaMappedY.toFixed(2)),
-                    baselineX: Number(mapped.baselineStart[0].toFixed(2)),
-                    baselineY: Number(mapped.baselineStart[1].toFixed(2)),
-                    deltaX: Number((mapped.baselineStart[0] - formulaMappedX).toFixed(2)),
-                    deltaY: Number((mapped.baselineStart[1] - formulaMappedY).toFixed(2)),
+                    baselineX: Number(mapped.x.toFixed(2)),
+                    baselineY: Number(mapped.baselineY.toFixed(2)),
+                    deltaX: Number((mapped.x - formulaMappedX).toFixed(2)),
+                    deltaY: Number((mapped.y - formulaMappedY).toFixed(2)),
+                    fontSize: Number(mapped.fontSize.toFixed(2)),
+                    measuredTextWidth: Number(measuredTextWidth.toFixed(2)),
+                    textScaleX: Number(textScaleX.toFixed(4)),
                     mappedX: Number(mapped.x.toFixed(2)),
                     mappedY: Number(mapped.y.toFixed(2)),
                     mappedWidth: Number(mapped.width.toFixed(2)),
@@ -2254,15 +3151,10 @@ class FixedEnhancedPDFReader {
             // Clear previous content
             textLayer.innerHTML = '';
 
-            // PDF.js v4.x: Use Official TextLayerBuilder Class
-            // TextLayerBuilder in pdfjs-dist/web/pdf_viewer.mjs is the correct export name.
-            // It handles font metrics, baseline alignment, and coordinate transformations internally.
-
+            // Strategy 1: PDF.js v4.x TextLayerBuilder from pdf_viewer.mjs
+            // (loaded by PDFReaderApp.tsx and placed on window)
             if (window.TextLayerBuilder && window.EventBus) {
-                // Create EventBus instance (required by TextLayerBuilder in v4.x)
                 const eventBus = new window.EventBus();
-
-                // Official PDF.js TextLayerBuilder - handles all transformations correctly
                 const textLayerBuilder = new window.TextLayerBuilder({
                     pdfPage: page,
                     eventBus: eventBus,
@@ -2270,26 +3162,71 @@ class FixedEnhancedPDFReader {
                     accessibilityManager: null,
                     enablePermissions: false
                 });
-
-                // Set container and render
                 textLayer.appendChild(textLayerBuilder.div);
                 await textLayerBuilder.render(viewport);
-
-                console.log('✅ Text layer rendered using official PDF.js TextLayerBuilder');
-
-            } else {
-                // Fallback if TextLayerBuilder not loaded
-                console.warn('⚠️ TextLayerBuilder or EventBus not available');
-                console.warn('Available:', {
-                    TextLayerBuilder: !!window.TextLayerBuilder,
-                    EventBus: !!window.EventBus
-                });
+                console.log('✅ Text layer rendered using TextLayerBuilder');
+                return;
             }
+
+            // Strategy 2: pdfjsLib.TextLayer (available in pdfjs-dist v4.x core)
+            // Does not require pdf_viewer.mjs — works offline with the npm package
+            if (typeof pdfjsLib !== 'undefined' && pdfjsLib.TextLayer) {
+                const textContentSource = await page.getTextContent();
+                const textLayerDiv = document.createElement('div');
+                textLayerDiv.className = 'textLayer';
+                textLayer.appendChild(textLayerDiv);
+
+                const pdfTextLayer = new pdfjsLib.TextLayer({
+                    textContentSource: textContentSource,
+                    container: textLayerDiv,
+                    viewport: viewport
+                });
+                await pdfTextLayer.render();
+                console.log('✅ Text layer rendered using pdfjsLib.TextLayer');
+                return;
+            }
+
+            // Strategy 3: Manual text span rendering (ultimate fallback)
+            // Renders text content as positioned spans for basic text selection
+            const textContent = await page.getTextContent();
+            if (!textContent || !textContent.items || textContent.items.length === 0) return;
+
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'textLayer';
+            textLayerDiv.style.position = 'absolute';
+            textLayerDiv.style.left = '0';
+            textLayerDiv.style.top = '0';
+            textLayerDiv.style.right = '0';
+            textLayerDiv.style.bottom = '0';
+            textLayerDiv.style.overflow = 'hidden';
+            textLayerDiv.style.opacity = '0.25';
+            textLayerDiv.style.lineHeight = '1.0';
+
+            for (const item of textContent.items) {
+                if (!item.str) continue;
+                const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                const span = document.createElement('span');
+                span.textContent = item.str;
+                const fontHeight = Math.hypot(tx[2], tx[3]);
+                const left = tx[4];
+                const top = tx[5] - fontHeight;
+                span.style.cssText = `
+                    position: absolute;
+                    left: ${left}px;
+                    top: ${top}px;
+                    font-size: ${fontHeight}px;
+                    font-family: sans-serif;
+                    white-space: pre;
+                    pointer-events: all;
+                    color: transparent;
+                `;
+                textLayerDiv.appendChild(span);
+            }
+            textLayer.appendChild(textLayerDiv);
+            console.log('✅ Text layer rendered using manual span fallback');
 
         } catch (error) {
             console.error('❌ Error rendering text layer:', error);
-            console.error('Error details:', error.message);
-            console.error('Stack:', error.stack);
         }
     }
 
@@ -2380,6 +3317,83 @@ class FixedEnhancedPDFReader {
             "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    /**
+     * Tear down the reader instance: clear all timers, remove global event
+     * listeners, disconnect observers, and release canvas memory.
+     * Call this when the host component unmounts (e.g. React useEffect cleanup).
+     */
+    destroy() {
+        // --- Timers ---
+        if (this.resizeDebounceTimer) {
+            clearTimeout(this.resizeDebounceTimer);
+            this.resizeDebounceTimer = null;
+        }
+        if (this.fullscreenTimer) {
+            clearTimeout(this.fullscreenTimer);
+            this.fullscreenTimer = null;
+        }
+        if (this.mouseMoveTimer) {
+            clearTimeout(this.mouseMoveTimer);
+            this.mouseMoveTimer = null;
+        }
+
+        // --- Event listeners ---
+        if (this._boundHandlers) {
+            if (this._boundHandlers.resize) {
+                window.removeEventListener('resize', this._boundHandlers.resize);
+            }
+            if (this._boundHandlers.keydown) {
+                document.removeEventListener('keydown', this._boundHandlers.keydown);
+            }
+            if (this._boundHandlers.mousemove) {
+                document.removeEventListener('mousemove', this._boundHandlers.mousemove);
+            }
+            if (this._boundHandlers.fullscreenchange) {
+                document.removeEventListener('fullscreenchange', this._boundHandlers.fullscreenchange);
+            }
+            if (this._boundHandlers.clickHideContext) {
+                document.removeEventListener('click', this._boundHandlers.clickHideContext);
+            }
+            this._boundHandlers = {};
+        }
+
+        // --- IntersectionObserver ---
+        if (this.pageVisibilityObserver) {
+            this.pageVisibilityObserver.disconnect();
+            this.pageVisibilityObserver = null;
+        }
+
+        // --- Cancel OCR ---
+        this.cancelAllOCRJobs();
+        if (this.ocrWorkerManager && typeof this.ocrWorkerManager.terminate === 'function') {
+            this.ocrWorkerManager.terminate();
+        }
+
+        // --- Canvas memory ---
+        this.releaseCanvasMemory(this.canvas1, this.ctx1);
+        this.releaseCanvasMemory(this.canvas2, this.ctx2);
+        if (this.ocrMeasureCanvas) {
+            this.releaseCanvasMemory(this.ocrMeasureCanvas, this.ocrMeasureCtx);
+            this.ocrMeasureCanvas = null;
+            this.ocrMeasureCtx = null;
+        }
+
+        // --- Quill editor ---
+        if (this.notesEditor) {
+            this.notesEditor.off('text-change');
+            this.notesEditor = null;
+        }
+
+        // --- Window hooks ---
+        if (typeof window !== 'undefined') {
+            delete window.setOCRPageData;
+            delete window.setOCRDocumentData;
+            delete window.toggleOCRDebug;
+        }
+
+        console.log('🧹 FixedEnhancedPDFReader destroyed');
     }
 }
 

@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { OCRCacheManager, OCRWorkerManager } from '../ocr';
 
 // Type declarations for global objects
 declare global {
@@ -13,6 +14,8 @@ declare global {
         TextLayerBuilder: any; // TextLayerBuilder class from pdfjs-dist/web/pdf_viewer
         EventBus: any; // EventBus class from pdfjs-dist/web/pdf_viewer
         Tesseract: any;
+        OCRCacheManager?: typeof OCRCacheManager;
+        OCRWorkerManager?: typeof OCRWorkerManager;
         performOCR?: (payload: { imageDataUrl: string; pageNumber: number }) => Promise<any>;
         setOCRPageData: (pageNumber: number, pageData: any) => void;
         setOCRDocumentData: (ocrDocumentData: any) => void;
@@ -22,9 +25,9 @@ declare global {
 
 // Set PDF.js worker - use the worker from the installed npm package
 if (typeof window !== 'undefined') {
-    // Use the worker bundled with the pdfjs-dist npm package (version 4.10.38)
-    // This ensures API and Worker versions match exactly
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+    // Use locally bundled worker for offline support & version consistency
+    // The file is copied from node_modules/pdfjs-dist/build/ to public/lib/
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/lib/pdf.worker.min.mjs';
 }
 
 export default function PDFReaderApp() {
@@ -32,6 +35,11 @@ export default function PDFReaderApp() {
     // The actual implementation uses the enhanced PDF reader class from app.js converted to React hooks
 
     useEffect(() => {
+        if (typeof window !== 'undefined') {
+            window.OCRCacheManager = OCRCacheManager;
+            window.OCRWorkerManager = OCRWorkerManager;
+        }
+
         // Dynamically load the Quill library
         if (typeof window !== 'undefined' && !window.Quill) {
             const script = document.createElement('script');
@@ -55,19 +63,7 @@ export default function PDFReaderApp() {
             });
         }
 
-        // Load Tesseract.js only when no custom OCR function is provided.
-        if (typeof window !== 'undefined' && !window.Tesseract && typeof window.performOCR !== 'function') {
-            const ocrScript = document.createElement('script');
-            ocrScript.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-            ocrScript.async = true;
-            ocrScript.onload = () => {
-                console.log('Tesseract.js loaded for OCR fallback');
-            };
-            ocrScript.onerror = () => {
-                console.warn('Tesseract.js failed to load; provide window.performOCR(payload) for OCR fallback');
-            };
-            document.head.appendChild(ocrScript);
-        }
+        // OCR is now prepared in the dedicated worker pipeline.
     }, []);
 
     return (
@@ -273,6 +269,9 @@ export default function PDFReaderApp() {
                             </div>
                             {/* PDF Page Wrapper - positions canvas and text/highlight layers together */}
                             <div className="pdf-page-wrapper hidden" id="pdfPageWrapper">
+                                <button id="toggleOCRPage1" className="btn btn--secondary btn--sm ocr-page-toggle" title="Toggle OCR for this page">
+                                    OCR
+                                </button>
                                 <canvas id="pdfCanvas" className="pdf-canvas"></canvas>
                                 <div id="ocrLayer" className="ocr-layer"></div>
                                 <div id="textLayer" className="text-layer"></div>
@@ -280,6 +279,9 @@ export default function PDFReaderApp() {
                             </div>
                             {/* Second page wrapper for double-page mode */}
                             <div className="pdf-page-wrapper hidden" id="pdfPageWrapper2">
+                                <button id="toggleOCRPage2" className="btn btn--secondary btn--sm ocr-page-toggle" title="Toggle OCR for this page">
+                                    OCR
+                                </button>
                                 <canvas id="pdfCanvas2" className="pdf-canvas"></canvas>
                                 <div id="ocrLayer2" className="ocr-layer"></div>
                                 <div id="textLayer2" className="text-layer"></div>
@@ -537,13 +539,15 @@ function PDFReaderInitializer() {
         // Make pdfjsLib globally available for app.js
         if (typeof window !== 'undefined') {
             (window as any).pdfjsLib = pdfjsLib;
+            window.OCRCacheManager = window.OCRCacheManager || OCRCacheManager;
+            window.OCRWorkerManager = window.OCRWorkerManager || OCRWorkerManager;
         }
 
         // Dynamically import and initialize the PDF reader
         const initializeReader = async () => {
             // Load the original app.js logic
             const script = document.createElement('script');
-            script.src = '/app.js';
+            script.src = './app.js';
             script.type = 'text/javascript';
 
             // Critical: Wait for script to load, then manually trigger initialization
@@ -594,7 +598,10 @@ function PDFReaderInitializer() {
         }
 
         return () => {
-            // Cleanup if needed
+            // Cleanup: destroy reader instance to clear timers, listeners, observers
+            if ((window as any).reader && typeof (window as any).reader.destroy === 'function') {
+                (window as any).reader.destroy();
+            }
         };
     }, []);
 
